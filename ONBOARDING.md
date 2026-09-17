@@ -60,21 +60,19 @@ Testnet and test token only, today.
 
 ## 2. The canonical documents
 
-Read them in this order. **`Goal.md` wins on any conflict.**
+This is the public mirror of the Chit build. The code, contracts, tests and
+build log are all here. The build-contract documents — `Goal.md`, `plan.md`,
+`prompt.md`, `design.md`, `design-stage2.md`, the `specs/` tree and `verify.sh`
+— are not mirrored; they live in the private build repo, and code comments that
+cite a `specs/...` path are pointing there.
 
 | File | What it settles |
 |---|---|
-| [Goal.md](Goal.md) | Product, stages, scope, constraints, definition of done. The source of truth. |
-| [plan.md](plan.md) | Autonomy: what you may do without asking, what you must stop and ask about. |
-| [prompt.md](prompt.md) | Build choreography: phases, task ranges, done_when per phase. |
-| [design.md](design.md) | Stage 1 approved product/experience design. |
-| [design-stage2.md](design-stage2.md) | Stage 2 approved design. The settled decisions list is binding. |
-| [specs/001-fleet-mission/](specs/001-fleet-mission/) | Stage 1 spec, plan, data model, tasks, quickstart, research. |
-| [specs/002-private-funding-pool/](specs/002-private-funding-pool/) | Stage 2, same shape. `tasks.md` shows T001–T040 status. |
+| [README.md](README.md) | The product, the three stages, and the honest privacy claim. Start here. |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | The running build log. ~60KB, newest at the bottom. Read the tail before starting work — it explains most of the "why is it like this" questions. |
-| [verify.sh](verify.sh) | The done predicates. Has the final vote. |
 | [PROGRESS.md](PROGRESS.md) | How the landing's "how far along" sheet is computed from the task lists. Progress is read, never typed. |
-| The workspace laws | Not in this repo. They live one level up in the workspace and govern every project in it, so the parts that bind this build are reproduced in [§7](#7-the-rules). Ask the founder for the file itself. |
+| [docs/round-creation-architecture.md](docs/round-creation-architecture.md) | How round creation is put together. |
+| The workspace laws | Not in this repo. They govern every project in the workspace, so the parts that bind this build are reproduced in [§7](#7-the-rules). |
 
 Traceability runs: approved design → FR/SC numbers in the spec → COMP components
 → T-numbered tasks → a `verify.sh` tag. Every change should be locatable in that
@@ -296,7 +294,7 @@ non-mutating dry run — start there).
 
 ## 7. The rules
 
-These are not style preferences. They come from the workspace laws and from [plan.md](plan.md).
+These are not style preferences. They come from the workspace laws and the build contract.
 
 **Laws:**
 - **Done means `verify.sh` exits 0.** Not a summary, not a checked-off task,
