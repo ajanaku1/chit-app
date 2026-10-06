@@ -38,7 +38,8 @@ export type SessionChain = {
    * less of the request's budget left waits that much and is reported as sent, not landed, when the receipt is slower;
    * zero or less waits for none.
    */
-  execute(account: Address, target: Address, value: bigint, data: Hex, receiptWaitMs?: number): Promise<{ hash: Hex; landed: boolean }>;
+  /** `reverted`: the receipt was seen and it failed, so nothing moved; `landed: false` without it is a receipt not seen in time. */
+  execute(account: Address, target: Address, value: bigint, data: Hex, receiptWaitMs?: number): Promise<{ hash: Hex; landed: boolean; reverted?: boolean }>;
   signerBalance(): Promise<bigint>;
   /** Whether the owner let the bot's key sell from this account (`sellAllowed(key)` on the account). */
   sellAllowed(account: Address): Promise<boolean>;
@@ -51,7 +52,7 @@ export type SessionChain = {
    */
   canSell(account: Address, router: Address, poolKey: PoolKey | undefined, amountIn: bigint, minOut: bigint, deadline?: bigint): Promise<{ ok: boolean; why: string }>;
   /** `sell(router, poolKey, amountIn, minOut, deadline)` on the account, from the bot's key: the sale as one call, the ETH into the account. */
-  sell(account: Address, sale: SessionSell): Promise<{ hash: Hex; landed: boolean }>;
+  sell(account: Address, sale: SessionSell): Promise<{ hash: Hex; landed: boolean; reverted?: boolean }>;
   /** A sent trade's receipt: its status, and the token's units that reached the account in it; undefined while there is none (bot-positions.ts). */
   settle?(hash: Hex, token: Address, account: Address): Promise<TradeReceipt>;
   /** Every token the chain shows the account receiving, lowercase, once each: Positions lists what it still holds (bot-positions-card.ts). */
@@ -107,13 +108,13 @@ export const createSessionChain = (config: SessionChainConfig): SessionChain => 
   const wallet: WalletClient = createWalletClient({ account, chain, transport });
   const receiptWaitMs = config.receiptWaitMs ?? RECEIPT_WAIT_MS;
   /** One send from the bot's key to the account, then the receipt; a wait that runs out, or none asked for, is a hash without a verdict. */
-  const send = async (a: Address, data: Hex, gas: bigint, waitMs = receiptWaitMs): Promise<{ hash: Hex; landed: boolean }> => {
+  const send = async (a: Address, data: Hex, gas: bigint, waitMs = receiptWaitMs): Promise<{ hash: Hex; landed: boolean; reverted?: boolean }> => {
     const hash = await wallet.sendTransaction({ account, chain, to: a, data, gas });
     // viem reads a timeout of zero as no timeout at all, so no time left is no wait, said here rather than handed on.
     if (waitMs <= 0) return { hash, landed: false };
     try {
       const receipt = await pub.waitForTransactionReceipt({ hash, timeout: Math.min(waitMs, receiptWaitMs) });
-      return { hash, landed: receipt.status === "success" };
+      return { hash, landed: receipt.status === "success", reverted: receipt.status !== "success" };
     } catch {
       return { hash, landed: false };
     }

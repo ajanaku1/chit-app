@@ -235,6 +235,9 @@ export class OrderRunner {
     const held = this.#d.holders ? await this.#d.holders(link.owner) : { ok: true as const };
     // Unknown is not "less": the pass is skipped quietly and the next one reads again.
     if (!held.ok) return "unknown" in held ? "skipped" : this.#wait(o, now, "your wallet holds less $CHIT than the beta's line; the order waits until it holds the line again");
+    // The account pays the buy: one it cannot cover would revert with the bot's gas spent. A balance that cannot be read is not a refusal.
+    const has = await Promise.resolve().then(() => this.#d.reads.ethBalance(o.account)).catch(() => undefined);
+    if (has !== undefined && has < o.ethWei) return this.#wait(o, now, `your account holds ${eth(has)} ETH and this order buys ${eth(o.ethWei)}; it waits until the account is funded (Sessions page)`);
     const [info, quote] = await Promise.all([this.#d.reads.tokenInfo(o.token), this.#d.reads.quoteBuy(o.token, o.ethWei)]);
     if (!info.hasPool || quote === null) return this.#refuse(o, now, "no quote from the pool right now");
     let minOut = minOutFor(quote, this.#d.buySlippageBps ?? 300);

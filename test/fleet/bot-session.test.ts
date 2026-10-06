@@ -947,3 +947,47 @@ test("a buy tap whose holders check could not be read says so and asks to try ag
   assert.doesNotMatch(textAt(-1), /holds/);
   assert.equal(session.calls.length, 0);
 });
+
+/**
+ * Found 2026-10-05 with a competition entrant: three buys bigger than the
+ * account held were sent and reverted, Chit paid their gas, and the bot said
+ * "sent, not confirmed as landed" as if they might still go through. And users
+ * tapping Sell 50% several times while the bot was slow got several sales.
+ */
+test("a buy bigger than the account holds is refused before anything is sent, with what it holds and how to fund it", async () => {
+  const { links, session, bot, textAt } = setup({ reads: { ...reads, async ethBalance() { return parseEther("0.0007"); } } as unknown as BotChain });
+  await linked(links);
+  await bot.handle(tap(`b:${PEPE}:0.005`));
+  assert.match(textAt(-1), /your account holds <code>0\.0007 ETH<\/code>; this buy needs <code>0\.005 ETH<\/code>\. fund it on the Sessions page/);
+  assert.equal(session.calls.length, 0, "no gas spent on a buy that cannot succeed");
+});
+
+test("a buy or a sell that reverts on chain says it failed and that nothing moved, not that it may still land", async () => {
+  const base = fakeSession();
+  const failed = { hash: ("0x" + "ef".repeat(32)) as Hex, landed: false, reverted: true };
+  const r = setup({ session: { ...base.s, async execute() { return failed; }, async sellAllowed() { return true; }, async canSell() { return { ok: true, why: "" }; }, async sell() { return failed; } } });
+  await linked(r.links);
+  await r.bot.handle(tap(`b:${PEPE}:0.01`));
+  assert.match(r.textAt(-1), /failed on chain: nothing was bought, and no ETH left your account/);
+  assert.doesNotMatch(r.textAt(-1), /not confirmed/);
+  await r.bot.handle(tap(`s:${PEPE}:50`));
+  assert.match(r.textAt(-1), /failed on chain: nothing was sold, and your tokens are still in your account/);
+});
+
+test("taps that arrive while a trade is still going are answered and dropped: one tap, one trade; the next tap after it finishes is a new trade", async () => {
+  const { links, session, bot, telegram } = setup();
+  await linked(links);
+  let release: () => void = () => undefined;
+  session.during(() => new Promise<void>((r) => { release = r; }));
+  const first = bot.handle(tap(`b:${PEPE}:0.01`, false, 101));
+  await new Promise((r) => setTimeout(r, 5));
+  for (const id of [102, 103, 104]) await bot.handle(tap(`b:${PEPE}:0.01`, false, id));
+  const answers = telegram.sent.filter((o) => o.kind === "answer" && (o as { text?: string }).text).map((o) => (o as { text: string }).text);
+  assert.deepEqual(answers, Array(3).fill("still working on your last trade. wait for its answer."));
+  release();
+  await first;
+  assert.equal(session.calls.length, 1, "four taps, one buy");
+  session.during(undefined);
+  await bot.handle(tap(`b:${PEPE}:0.01`, false, 105));
+  assert.equal(session.calls.length, 2, "a tap after the answer is a new trade");
+});

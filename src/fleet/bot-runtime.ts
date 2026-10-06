@@ -175,7 +175,7 @@ import type { CopyStore } from "./bot-copy.js";
 import { createCopyDesk, dailyLimitsFromEnv, positionLedgerFromEnv } from "./bot-copy-runtime.js";
 import { recordedPoolsFromEnv } from "./pool-registry.js";
 import { MemoryAlertStore, NeonAlertStore, type AlertStore } from "./bot-alerts.js";
-import { MemoryUpdateClaims, NeonUpdateClaims, type UpdateClaims } from "./bot-updates.js";
+import { MemoryUpdateClaims, NeonUpdateClaims, type UpdateClaims, MemoryTradeLocks, NeonTradeLocks, type TradeLocks } from "./bot-updates.js";
 import { DualBot, MemoryFloorStore, NeonFloorStore, type FloorStore } from "./bot-dual.js";
 import { MemoryBugStore, MemoryCompStore, NeonBugStore, NeonCompStore, type BoardLike, type BugStore, type CompStore } from "./bot-comp.js";
 
@@ -256,6 +256,14 @@ const linksFromEnv = (): BotLinkStore => {
 };
 
 /** Session mode: each update id acted on once across every instance (bot-updates.ts); the same store rule as the links. */
+/** One buy or sell at a time per person, shared by every instance through the database (bot-updates.ts). */
+const tradeLocksFromEnv = (): TradeLocks => {
+  const url = process.env.DATABASE_URL;
+  if (!url) return new MemoryTradeLocks();
+  const sql = neon(url);
+  return new NeonTradeLocks({ query: (query, params) => sql.query(query, params) as Promise<readonly Record<string, unknown>[]> });
+};
+
 const updateClaimsFromEnv = (): UpdateClaims => {
   const url = process.env.DATABASE_URL;
   if (url) {
@@ -351,6 +359,7 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
     session: overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as `0x${string}` }),
     links: overrides.links ?? linksFromEnv(),
     updates: overrides.updates ?? updateClaimsFromEnv(),
+    tradeLocks: tradeLocksFromEnv(),
     telegram: createTelegram(token!),
     ...(process.env.BOT_PLATE_OFF === "1" ? {} : { plate: createTokenPlateRenderer(process.env.BOT_ASSET_DIR || undefined) }),
     ...(process.env.ORUS_PARTNER_API_KEY ? { orus: createOrusScanner({ apiKey: process.env.ORUS_PARTNER_API_KEY, chainId, ...(process.env.ORUS_API_BASE ? { baseUrl: process.env.ORUS_API_BASE } : {}) }) } : {}),
