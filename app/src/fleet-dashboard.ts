@@ -31,8 +31,14 @@ const recoverStepLine = (step: RecoverStep): string => ({
   sending: "Step 3 of 3: each wallet sends its ETH to the address you named. This can take a minute; keep this page open.",
 })[step];
 
+const recoverReason = (error: unknown): string => {
+  if (error instanceof RecoverFlowError) return error.reason;
+  if (error instanceof RequestFailed) return error.reason ?? error.code;
+  return (error as Error).message;
+};
+
 const recoverErrorText = (error: unknown): string => {
-  const reason = error instanceof RecoverFlowError ? error.reason : error instanceof RequestFailed ? (error.reason ?? error.code) : (error as Error).message;
+  const reason = recoverReason(error);
   if (reason === "payout_invalid") return "Enter the address to send the ETH to.";
   if (reason === "payout_is_main_wallet") return "That is your main wallet. Paying out to it would link it to your fleet, so it is not allowed.";
   if (reason === "payout_is_contract") return "That address is a contract. Name a wallet.";
