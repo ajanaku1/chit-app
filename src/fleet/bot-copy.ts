@@ -488,6 +488,9 @@ export class CopyDesk {
       if (!held.ok) { await record({ ...base, followerTgId: f.followerTgId, ethWei: 0n, outcome: "skipped", why: "unknown" in held ? "your wallet's $CHIT could not be checked just now; nothing was sent for you" : "your wallet holds less $CHIT than the beta's line; mirrors are for holders" }); continue; }
       // Sized to the leader's buy, never above the follower's cap.
       const wei = leaderEthWei < f.capWei ? leaderEthWei : f.capWei;
+      // The follower's account pays: a mirror it cannot cover would revert with the bot's gas spent. Unreadable is not a skip.
+      const has = await Promise.resolve().then(() => this.#d.reads.ethBalance(link.account)).catch(() => undefined);
+      if (has !== undefined && has < wei) { await record({ ...base, followerTgId: f.followerTgId, ethWei: wei, outcome: "skipped", why: "your account holds less ETH than this mirror would buy; nothing was sent for you" }); continue; }
       const left = budgetUntil - this.#now.getTime();
       if (left < MIRROR_SEND_MS) { await record({ ...base, followerTgId: f.followerTgId, ethWei: wei, outcome: "skipped", why: "this run ran out of time before your turn; nothing was sent for you" }); continue; }
       const soFar = await this.#d.store.addTokenDay(day, token, wei);

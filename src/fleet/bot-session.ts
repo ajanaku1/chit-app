@@ -58,7 +58,7 @@ import { orusLine, type OrusScanner } from "./bot-orus.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { CAPTION_MAX_CHARS, esc, type Keyboard, type Outgoing, type Telegram } from "./bot-telegram.js";
 import type { TokenPlateRenderer } from "./bot-token-card.js";
-import { MemoryUpdateClaims, type UpdateClaims } from "./bot-updates.js";
+import { MemoryTradeLocks, MemoryUpdateClaims, type TradeLocks, type UpdateClaims } from "./bot-updates.js";
 import { sessionState } from "./session-keys.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor, venuePoolKey } from "./v4-swap.js";
 import type { Update } from "./bot-handlers.js";
@@ -88,6 +88,8 @@ export type SessionBotDeps = {
   copy?: CopyDesk;
   /** Each update id acted on once (bot-updates.ts); absent, this instance's memory, which is enough for one machine only. */
   updates?: UpdateClaims;
+  /** One buy or sell at a time per person (bot-updates.ts); absent, this instance's memory, which is enough for one machine only. */
+  tradeLocks?: TradeLocks;
   /** Standing orders (limit buys, DCA), fired by api/bot/orders.js; absent, the card offers none. */
   orders?: OrderStore;
   /** Big-buy alerts (bot-alerts.ts): the user's line, read by the watcher's cron; absent, no 🔔 Alerts button. */
@@ -122,6 +124,8 @@ const SELL_GAS_WEI = 1_000_000n * 1_000_000_000n;
  * block the mirrors get what is left and are reported as sent, not landed.
  */
 export const MIRRORS_UNTIL_MS = 50_000;
+/** What a tap is told while the same person's last buy or sell is still going (2026-10-06: Sell 50% tapped five times sold five times). */
+const BUSY = "still working on your last trade. wait for its answer.";
 /** How long Positions waits for ETH's dollar price before showing ETH alone. */
 const USD_WAIT_MS = 3_000;
 const short = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -153,10 +157,12 @@ export class SessionBot {
   readonly #copy: CopyCards | undefined;
   readonly #alerts: AlertCards | undefined;
   readonly #updates: UpdateClaims;
+  readonly #locks: TradeLocks;
 
   constructor(d: SessionBotDeps) {
     this.#d = d;
     this.#updates = d.updates ?? new MemoryUpdateClaims();
+    this.#locks = d.tradeLocks ?? new MemoryTradeLocks();
     // copy: a mirrored buy spends the follower's own daily allowance, the same one their own taps spend: this instance's count first, then the desk's ledger, which the watcher's mirrors charge too.
     this.#copy = d.copy ? new CopyCards({ copy: d.copy, telegram: d.telegram, siteUrl: d.siteUrl, budget: async (tgId) => this.#charge(tgId) ?? d.copy!.chargeDay(tgId), ...(d.orus ? { orus: d.orus } : {}), ...(d.hey ? { hey: d.hey } : {}) }) : undefined;
     // alerts: the card writes the subscription; the watcher's cron sends the alerts (bot-alert-cards.ts).
@@ -214,7 +220,8 @@ export class SessionBot {
       if (pending && u.message.reply_to_message) {
         this.#pending.delete(tgId);
         if (pending.order) return this.#placeOrder(chatId, tgId, pending.token, pending.order, text);
-        return pending.side === "sell" ? this.#sell(chatId, tgId, pending.token, text) : this.#buy(chatId, tgId, pending.token, text, false, startedAt);
+        if (!(await this.#takeTrade(tgId))) return this.#say(chatId, BUSY);
+        return this.#oneTrade(tgId, () => (pending.side === "sell" ? this.#sell(chatId, tgId, pending.token, text) : this.#buy(chatId, tgId, pending.token, text, false, startedAt)));
       }
       const pasted = text.match(/0x[0-9a-fA-F]{40}/)?.[0];
       if (pasted) return this.#tokenCard(chatId, tgId, pasted.toLowerCase() as Address);
@@ -239,7 +246,7 @@ export class SessionBot {
       case "joinhow": await ack(); return this.#say(chatId, "send /join and the nickname the board shows, like <code>/join moonboy</code>. letters, digits, _ . - only, 3 to 20 of them.");
       case "comp": await ack(); return this.#d.comp ? this.#competition(chatId, tgId, messageId) : this.#help(chatId);
       case "token": await ack(); return a && isAddress(a) ? this.#tokenCard(chatId, tgId, a as Address, messageId) : this.#help(chatId);
-      case "b": await ack(); return a && isAddress(a) && b ? this.#buy(chatId, tgId, a as Address, b, true, startedAt) : this.#help(chatId);
+      case "b": if (!(await this.#takeTrade(tgId))) return ack(BUSY); await ack(); return this.#oneTrade(tgId, () => (a && isAddress(a) && b ? this.#buy(chatId, tgId, a as Address, b, true, startedAt) : this.#help(chatId)));
       case "ask": {
         await ack();
         if (!a || !isAddress(a)) return this.#help(chatId);
@@ -247,7 +254,7 @@ export class SessionBot {
         return this.#d.telegram.deliver({ kind: "send", chatId, text: `how much ETH into <code>${a}</code>? reply with a number, like 0.02.`, ask: "amount in ETH" });
       }
       // sell: "s:<token>:<pct>" from a button, "asks:<token>" opens the reply field for a share.
-      case "s": await ack(); return a && isAddress(a) && b ? this.#sell(chatId, tgId, a as Address, b) : this.#help(chatId);
+      case "s": if (!(await this.#takeTrade(tgId))) return ack(BUSY); await ack(); return this.#oneTrade(tgId, () => (a && isAddress(a) && b ? this.#sell(chatId, tgId, a as Address, b) : this.#help(chatId)));
       case "asks": {
         await ack();
         if (!a || !isAddress(a)) return this.#help(chatId);
@@ -369,6 +376,12 @@ export class SessionBot {
     return this.#out(chatId, messageId, card.text, kb(...tokenRows, [...toggle, btn("↻ Refresh", `pos:${view.unit}`)], [btn("← Back", "home")]));
   }
 
+  /** One buy or sell at a time per person, across instances when the store is shared (bot-updates.ts TradeLocks). */
+  #takeTrade(tgId: string): Promise<boolean> { return this.#locks.take(tgId, this.#now); }
+  async #oneTrade(tgId: string, run: () => Promise<void>): Promise<void> {
+    try { await run(); } finally { await this.#locks.free(tgId).catch(() => undefined); }
+  }
+
   #sessionLine(state: ReturnType<typeof sessionState>, s: { maxValuePerCall: string; totalValueCap: string; spentValue: string; expiry: number }): string {
     switch (state) {
       case "active": return `session <b>active</b>: <code>${eth(BigInt(s.maxValuePerCall), 4)} ETH</code> a trade, <code>${eth(BigInt(s.totalValueCap), 4)} ETH</code> in all (<code>${eth(BigInt(s.spentValue), 4)}</code> spent), until ${new Date(s.expiry * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
@@ -474,6 +487,9 @@ export class SessionBot {
     const [info, quote] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.quoteBuy(token, wei)]);
     if (!info.hasPool || quote === null) return this.#say(chatId, "no ETH pool on the venue for this token.", kb([btn("← Back", "home")]));
     // The contract's own answer first, so a refused buy burns no gas and says why in the contract's words.
+    // The account pays the trade: a buy bigger than it holds would revert on chain with the bot's gas spent (2026-10-05).
+    const has = await this.#d.reads.ethBalance(link.account);
+    if (has < wei) return this.#say(chatId, `your account holds <code>${eth(has)} ETH</code>; this buy needs <code>${eth(wei)} ETH</code>. fund it on the Sessions page, or buy less.`, kb([url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("← Back", `token:${token}`)]));
     const can = await this.#d.session.canExecute(link.account, this.#d.reads.router, UNIVERSAL_ROUTER_EXECUTE_SELECTOR, wei);
     if (!can.ok) return this.#say(chatId, `your session says no: <b>${esc(can.why)}</b>. manage it on the Sessions page.`, kb([url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("← Back", `token:${token}`)]));
     const minOut = minOutFor(quote, this.#cfg("buySlippageBps"));
@@ -490,6 +506,7 @@ export class SessionBot {
     const explorer = `https://robinhoodchain.blockscout.com/tx/${r.hash}`;
     await this.#say(chatId, r.landed
       ? `landed. <a href="${explorer}">${short(r.hash)}</a> · the tokens are in your account.`
+      : r.reverted ? `failed on chain: nothing was bought, and no ETH left your account. <a href="${explorer}">${short(r.hash)}</a>`
       : `sent, not confirmed as landed: <a href="${explorer}">${short(r.hash)}</a>. check the explorer; the account's floor protects the fill.`,
       kb([btn("↻ Card", `token:${token}`), btn("← Back", "home")]));
     // copy: a leader's landed buy goes to the feed and into the followers' accounts, after the leader's own fill, with what is left of the request's budget.
@@ -666,6 +683,7 @@ export class SessionBot {
     const explorer = `https://robinhoodchain.blockscout.com/tx/${r.hash}`;
     await this.#say(chatId, r.landed
       ? `landed. <a href="${explorer}">${short(r.hash)}</a> · the ETH is in your account.`
+      : r.reverted ? `failed on chain: nothing was sold, and your tokens are still in your account. <a href="${explorer}">${short(r.hash)}</a>`
       : `sent, not confirmed as landed: <a href="${explorer}">${short(r.hash)}</a>. check the explorer; the account's floor protects the fill.`,
       kb([btn("↻ Card", `token:${token}`), btn("← Back", "home")]));
   }

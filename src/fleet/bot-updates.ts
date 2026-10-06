@@ -49,3 +49,44 @@ export class NeonUpdateClaims implements UpdateClaims {
     return rows.length > 0;
   }
 }
+
+/**
+ * One buy or sell at a time per person (2026-10-06): a user tapping Sell 50% five times while the bot was slow got
+ * five sales. `take` holds the person's lock for LOCK_MS, which outlives the host's sixty-second request, so a
+ * request that died frees it by expiry; `free` lets it go when the trade has been answered.
+ */
+export interface TradeLocks {
+  take(tgId: string, now: Date): Promise<boolean>;
+  free(tgId: string): Promise<void>;
+}
+
+const LOCK_MS = 90_000;
+
+export class MemoryTradeLocks implements TradeLocks {
+  readonly held = new Map<string, number>();
+  async take(tgId: string, now: Date) {
+    const until = this.held.get(tgId);
+    if (until !== undefined && until > now.getTime()) return false;
+    this.held.set(tgId, now.getTime() + LOCK_MS);
+    return true;
+  }
+  async free(tgId: string) { this.held.delete(tgId); }
+}
+
+/** Neon: one row per person holding a lock; taking is one statement that only succeeds when there is none or it has expired. */
+export class NeonTradeLocks implements TradeLocks {
+  #ready: Promise<void> | undefined;
+  constructor(private readonly sql: ClaimSql) {}
+  #init(): Promise<void> {
+    return (this.#ready ??= this.sql.query(`CREATE TABLE IF NOT EXISTS bot_trade_locks (tg_id TEXT PRIMARY KEY, until TIMESTAMPTZ NOT NULL)`).then(() => undefined).catch((e) => { this.#ready = undefined; throw e; }));
+  }
+  async take(tgId: string, now: Date) {
+    await this.#init();
+    const rows = await this.sql.query(
+      `INSERT INTO bot_trade_locks (tg_id, until) VALUES ($1, $2) ON CONFLICT (tg_id) DO UPDATE SET until = EXCLUDED.until WHERE bot_trade_locks.until < $3 RETURNING tg_id`,
+      [tgId, new Date(now.getTime() + LOCK_MS).toISOString(), now.toISOString()],
+    );
+    return rows.length > 0;
+  }
+  async free(tgId: string) { await this.#init(); await this.sql.query(`DELETE FROM bot_trade_locks WHERE tg_id = $1`, [tgId]); }
+}

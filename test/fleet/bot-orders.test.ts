@@ -499,3 +499,13 @@ test("neon: a timestamp read back as a Date keeps its milliseconds, so a dca's s
   assert.equal(o!.nextAt, "2026-10-01T09:41:12.345Z", "the slot as stored, to the millisecond");
   assert.equal(o!.createdAt, "2026-10-01T09:41:12.345Z");
 });
+
+test("an order the account cannot pay for waits with what it holds, and nothing is sent", async () => {
+  const poor = { ...reads(1_500_000n), async ethBalance() { return 1_000_000_000_000_000n / 1000n; } } as unknown as BotChain;
+  const { orders, links, session, runner } = setup(1_500_000n, { reads: poor });
+  await linked(links);
+  await orders.put(order({ id: "l", kind: "limit", triggerPerEth: 1_200_000n }));
+  await runner.run();
+  assert.equal(session.calls.length, 0);
+  assert.match((await orders.get("l"))!.lastError ?? "", /your account holds .* ETH and this order buys 0\.01; it waits until the account is funded/);
+});
