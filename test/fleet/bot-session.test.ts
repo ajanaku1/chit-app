@@ -991,3 +991,23 @@ test("taps that arrive while a trade is still going are answered and dropped: on
   await bot.handle(tap(`b:${PEPE}:0.01`, false, 105));
   assert.equal(session.calls.length, 2, "a tap after the answer is a new trade");
 });
+
+/**
+ * Asked for 2026-10-06 after SCRAPY: a token still on its launchpad's bonding
+ * curve has no Uniswap pool the bot can trade, and the card said only "no ETH
+ * pool". It now says where the token is and that it is high risk.
+ */
+const CURVED = "0x00000000000000000000000000000000000000dd" as Address;
+test("a token still on its launchpad's curve gets a high-risk warning that says it is not on a Uniswap pool yet; any other token without a pool gets the general one", async () => {
+  const onCurve = setup({ launch: async () => ({ onCurve: true as const, thresholdWei: parseEther("4.2") }) });
+  await linked(onCurve.links);
+  await onCurve.bot.handle(tap(`token:${CURVED}`));
+  const t = onCurve.textAt(-1);
+  assert.match(t, /isn't on a Uniswap pool yet\. it's still on the Pons launchpad's bonding curve, and moves to Uniswap once <code>4\.2 ETH<\/code> has gone in/);
+  assert.match(t, /high risk/);
+  assert.match(t, /the bot can't buy or sell on the curve; it will trade .* once it graduates/);
+  const none = setup({ launch: async () => undefined });
+  await linked(none.links);
+  await none.bot.handle(tap(`token:${CURVED}`));
+  assert.match(none.textAt(-1), /has no Uniswap pool with liquidity yet, so the bot can't trade it\. high risk/);
+});
