@@ -149,12 +149,13 @@
  *                                token is the one the bot trades
  */
 
+import { createLaunchCheck } from "./bot-launchpad.js";
 import { holdersGateFromEnv } from "./bot-holders.js";
 import { createUsdPrice } from "./bot-usd-price.js";
 import { timingSafeEqual } from "node:crypto";
 
 import { neon } from "@neondatabase/serverless";
-import { isHex, parseEther } from "viem";
+import { isHex, parseEther, createPublicClient, http } from "viem";
 
 import { isAddress, type Address } from "./types.js";
 import { createRelayBridge } from "./bot-bridge.js";
@@ -354,6 +355,11 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
   const reads = createBotChain({ chainId, rpcUrl, defaultToken: allowlist[0] ?? TESTNET_VENUE_TOKEN, router: ROUTER, poolManager: POOL_MANAGER, recordedPools: recordedPoolsFromEnv(refuse) });
   const usdToken = usdTokenFromEnv();
   const holders = holdersGateFromEnv((t, o) => (reads.tokenBalanceStrict ?? reads.tokenBalance)(t, o));
+  // BOT_LAUNCHPAD_FACTORY (PonsV2LaunchFactory): a token with no Uniswap pool is checked for a launch still on its curve, for the card's warning.
+  const launchpad = process.env.BOT_LAUNCHPAD_FACTORY?.trim();
+  if (launchpad && !isAddress(launchpad)) refuse("BOT_LAUNCHPAD_FACTORY must be the launchpad factory's address");
+  const launchClient = launchpad ? createPublicClient({ transport: http(rpcUrl) }) : undefined;
+  const launch = launchpad && launchClient ? createLaunchCheck({ factory: launchpad as Address, readContract: (args) => launchClient.readContract(args as never) }) : undefined;
   const deps: SessionBotDeps = {
     reads,
     session: overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as `0x${string}` }),
@@ -376,6 +382,7 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
     bugs: { store: bugsFromEnv(), ...(process.env.MONITOR_CHAT_ID?.trim() ? { operatorChatId: process.env.MONITOR_CHAT_ID.trim() } : {}) },
     board: boardFromSite(site),
     ...(holders ? { holders } : {}),
+    ...(launch ? { launch } : {}),
     ...(usdToken ? { usdPerEth: createUsdPrice({ reads, token: usdToken }) } : {}),
   };
   // Leaders and followers: the desk over the same reads, session and links (bot-copy-runtime.ts, the one factory this webhook and the watcher's cron share).

@@ -43,6 +43,7 @@
 
 import { holdersAnswer, type HoldersGate } from "./bot-holders.js";
 import { boardText, bugReply, joinReply, type BoardLike, type BugStore, type CompStore } from "./bot-comp.js";
+import type { LaunchCheck } from "./bot-launchpad.js";
 import { positionsCard } from "./bot-positions-card.js";
 import { noteProceeds, noteSent, saleProceeds, type PositionLedger } from "./bot-positions.js";
 import { type Address, type Hex, isAddress } from "viem";
@@ -90,6 +91,8 @@ export type SessionBotDeps = {
   updates?: UpdateClaims;
   /** One buy or sell at a time per person (bot-updates.ts); absent, this instance's memory, which is enough for one machine only. */
   tradeLocks?: TradeLocks;
+  /** Whether a token without a Uniswap pool is a launch still on its bonding curve (bot-launchpad.ts), for the card's warning. */
+  launch?: LaunchCheck;
   /** Standing orders (limit buys, DCA), fired by api/bot/orders.js; absent, the card offers none. */
   orders?: OrderStore;
   /** Big-buy alerts (bot-alerts.ts): the user's line, read by the watcher's cron; absent, no 🔔 Alerts button. */
@@ -382,6 +385,14 @@ export class SessionBot {
     try { await run(); } finally { await this.#locks.free(tgId).catch(() => undefined); }
   }
 
+  /** Said when a token has no Uniswap pool to trade: where it is, if it is a launch on its curve, and that it is high risk (2026-10-06). */
+  async #noPool(token: Address, symbol: string): Promise<string> {
+    const launch = this.#d.launch ? await this.#d.launch(token) : undefined;
+    const name = `<b>${esc(symbol)}</b>`;
+    if (launch?.onCurve) return `⚠️ ${name} isn't on a Uniswap pool yet. it's still on the Pons launchpad's bonding curve, and moves to Uniswap once <code>${eth(launch.thresholdWei, 4)} ETH</code> has gone in.\n\nhigh risk: a token this early has a thin market, one trade can move its price hard, and many never graduate. the bot can't buy or sell on the curve; it will trade ${name} once it graduates. anything you buy on the launchpad meanwhile is outside the bot.`;
+    return `⚠️ ${name} has no Uniswap pool with liquidity yet, so the bot can't trade it. high risk: a token without a real pool can be hard or impossible to sell. if it's still on a launchpad, the bot can trade it once it moves to a Uniswap pool.`;
+  }
+
   #sessionLine(state: ReturnType<typeof sessionState>, s: { maxValuePerCall: string; totalValueCap: string; spentValue: string; expiry: number }): string {
     switch (state) {
       case "active": return `session <b>active</b>: <code>${eth(BigInt(s.maxValuePerCall), 4)} ETH</code> a trade, <code>${eth(BigInt(s.totalValueCap), 4)} ETH</code> in all (<code>${eth(BigInt(s.spentValue), 4)}</code> spent), until ${new Date(s.expiry * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
@@ -420,7 +431,7 @@ export class SessionBot {
     const link = await this.#d.links.getLink(tgId);
     if (!link) return this.#home(chatId, tgId);
     const [info, held, scan, hey] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account), this.#d.orus?.scan(token), this.#d.hey?.scan(token)]);
-    if (!info.hasPool) return this.#out(chatId, messageId, `<b>${esc(info.symbol)}</b> <code>${token}</code>\nno ETH pool on the venue for this token, so nothing to buy it with here.`, kb([btn("← Back", "home")]));
+    if (!info.hasPool) return this.#out(chatId, messageId, `<b>${esc(info.symbol)}</b> <code>${token}</code>\n\n${await this.#noPool(token, info.symbol)}`, kb([btn("← Back", "home")]));
     const text = [
       `<b>${esc(info.symbol)}</b> · <code>${token}</code> <i>(tap to copy)</i>`,
       `price: <code>${fmt(info.perEth, info.decimals, 2)} ${esc(info.symbol)}</code> per ETH · pool: <code>${eth(info.poolEth, 4)} ETH</code>`,
