@@ -588,7 +588,7 @@ function CopyChip({ label, value }: { label: string; value: string }) {
       <code className="font-mono text-[13px] text-paper/75">{label}</code>
       <button
         type="button"
-        className="rounded-full bg-paper/10 px-3.5 py-1.5 text-[12.5px] transition-colors hover:bg-paper/20"
+        className="rounded-full bg-paper/10 px-3.5 py-2 text-[12.5px] transition-colors hover:bg-paper/20"
         onClick={async () => {
           try { await navigator.clipboard.writeText(value); setSaid("Copied"); } catch { setSaid(value); }
           setTimeout(() => setSaid("Copy"), 1800);
@@ -656,13 +656,14 @@ export function Launch({ tone = "surface" }: { tone?: "surface" | "void" }) {
           ].map(([title, links]) => (
             <nav key={title as string} aria-label={title as string}>
               <p className="eyebrow text-paper/40">{title as string}</p>
-              <ul className="mt-4 space-y-2.5">
+              <ul className="mt-3 space-y-0.5">
                 {(links as string[][]).map(([label, href]) => (
                   <li key={label}>
+                    {/* inline-block with vertical padding: a finger-sized target, the same rhythm on screen */}
                     {href.startsWith("/") ? (
-                      <Link href={href} className="text-[14.5px] text-paper/70 transition-colors hover:text-paper">{label}</Link>
+                      <Link href={href} className="inline-block py-1.5 text-[14.5px] text-paper/70 transition-colors hover:text-paper">{label}</Link>
                     ) : (
-                      <a href={href} className="text-[14.5px] text-paper/70 transition-colors hover:text-paper">{label}</a>
+                      <a href={href} className="inline-block py-1.5 text-[14.5px] text-paper/70 transition-colors hover:text-paper">{label}</a>
                     )}
                   </li>
                 ))}

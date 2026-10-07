@@ -111,6 +111,8 @@ a { color: inherit; }
 .contract-row code > span:last-child::before { content: "…"; content: "…" / ""; }
 .contract-row button { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.65rem 0.2rem 0.5rem; border: 1px solid var(--glass-line); border-radius: var(--radius-pill); background: transparent; color: var(--soft-paper); font: inherit; font-size: 0.72rem; cursor: pointer; }
 .contract-row button.error { border-color: var(--coral-deep); }
+/* On a touch screen the Copy pill gets a finger-sized target; the look stays the same. */
+@media (pointer: coarse) { .contract-row button { min-height: 36px; padding-block: 0.4rem; } }
 .contract-row__icon { flex: none; width: 0.8rem; height: 0.8rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .contract-row__icon--done, #copy-contract-address[data-state="copied"] .contract-row__icon--copy { display: none; }
 #copy-contract-address[data-state="copied"] .contract-row__icon--done { display: block; }
@@ -138,6 +140,10 @@ h3 { font-weight: 700; letter-spacing: var(--track-snug); }
 .lead { margin: 0 0 1.25rem; color: var(--text-muted); font-size: 1rem; line-height: 1.5; }
 .lead.small { font-size: 0.95rem; }
 .fineprint, .hint { margin: 0.75rem 0 0; color: var(--text-muted); font-size: 0.82rem; line-height: 1.5; }
+/* A code block never sets the page's width: on a phone one long line used to widen the whole layout (Sessions, 1088px). */
+pre { max-width: 100%; overflow-x: auto; }
+/* The explanatory snippets wrap instead, so they read whole on a phone without a sideways scroll. */
+pre.hint { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fineprint a { color: var(--soft-paper); }
 .mono-line { color: var(--soft-paper); font-family: var(--font-mono); font-size: 0.82rem; overflow-wrap: anywhere; }
 .eligibility-line { color: var(--soft-paper); font-size: 0.9rem; }
