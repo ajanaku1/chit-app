@@ -1026,12 +1026,14 @@ test("a token that fixes Permit2's allowance at infinity: the Sell tap sends not
   assert.equal(session.sales.length, 0, "no sale is sent: it could only revert");
   assert.equal(simulated, 0, "no simulation either: the answer is already known");
   assert.deepEqual(asked, [{ token: PEPE, account: ACCOUNT }], "asked of the account's own allowance");
-  assert.match(telegram.last(), /PEPE can't be sold through the session: the token fixes its Permit2 approval at infinity/);
+  assert.match(telegram.last(), /PEPE can't be sold through the session: it is a Clanker-style launch that fixes its Permit2 approval at infinity/);
   assert.match(telegram.last(), /nothing was sent and no gas was spent/);
-  assert.match(telegram.last(), /use Withdraw token to send it to your wallet, then sell it from there/, "the way out is named");
-  assert.ok(buttons().includes("https://chit.tools/app/sessions"), "the Sessions page is the button");
+  assert.match(telegram.last(), /use Withdraw token to my wallet, then sell it from your wallet/, "the way out is named");
+  assert.ok(buttons().includes("https://chit.tools/app/sessions#wtoken-form"), "the button opens the Sessions page at the token withdraw");
   await bot.handle(tap(`token:${PEPE}`));
-  assert.match(telegram.last(), /the bot can buy PEPE but can't sell it from your session/, "said on the card, before anyone buys");
+  assert.match(telegram.last(), /the bot can buy PEPE but can't sell it from your session.*Clanker-style launch/, "said on the card, before anyone buys");
+  assert.match(telegram.last(), /href="https:\/\/chit.tools\/app\/sessions#wtoken-form">Withdraw token to my wallet<\/a>/, "the card links the way out");
+  assert.match(telegram.last(), /the bot cannot move tokens to your wallet/);
 });
 
 test("a token whose Permit2 allowance is not fixed carries no warning on the card, and a failed allowance read never blocks a sale", async () => {
