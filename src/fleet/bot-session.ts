@@ -430,13 +430,15 @@ export class SessionBot {
   async #tokenCard(chatId: string, tgId: string, token: Address, messageId?: number): Promise<void> {
     const link = await this.#d.links.getLink(tgId);
     if (!link) return this.#home(chatId, tgId);
-    const [info, held, scan, hey] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account), this.#d.orus?.scan(token), this.#d.hey?.scan(token)]);
+    const [info, held, scan, hey, fixedPermit2] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account), this.#d.orus?.scan(token), this.#d.hey?.scan(token), this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)]);
     if (!info.hasPool) return this.#out(chatId, messageId, `<b>${esc(info.symbol)}</b> <code>${token}</code>\n\n${await this.#noPool(token, info.symbol)}`, kb([btn("← Back", "home")]));
     const text = [
       `<b>${esc(info.symbol)}</b> · <code>${token}</code> <i>(tap to copy)</i>`,
       `price: <code>${fmt(info.perEth, info.decimals, 2)} ${esc(info.symbol)}</code> per ETH · pool: <code>${eth(info.poolEth, 4)} ETH</code>`,
       ...(scan && this.#d.orus ? [`orus: ${orusLine(scan, this.#d.orus.link(token))}`] : []),
       ...(hey ? [`hey research lab: ${heyLine(hey)}`] : []),
+      // Said before anyone buys: the bot can buy this token but the session can never sell it (2026-10-07, CHOP).
+      ...(fixedPermit2 ? [permit2FixedCard(info.symbol)] : []),
       `your account holds: <code>${fmt(held, info.decimals, 4)} ${esc(info.symbol)}</code>`,
       "",
       `<i>buys run as one execute on your account, guarded at ${(this.#cfg("buySlippageBps") / 100).toString()}%; a sell is one call on your account too, guarded at ${(this.#cfg("sellSlippageBps") / 100).toString()}%, the ETH back into your account, once you turn on let it sell on the Sessions page. the reply carries the hash.${info.hooked ? " hooked pool: the hook's fee is not in the quote." : ""}</i>`,
@@ -683,11 +685,17 @@ export class SessionBot {
     // The contract's own answer first: no flag, a paused, expired or revoked session, a router outside the rules, no floor, all refused here, before any gas, in its words.
     const can = await this.#d.session.canSell(link.account, this.#d.reads.router, poolKey, amount, minOut, deadline);
     if (!can.ok) return this.#say(chatId, `your session says no: <b>${esc(can.why)}</b>. manage it on the Sessions page.`, kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
+    // A token that fixes Permit2's allowance at infinity refuses the exact approval `sell` makes, every time (2026-10-07, CHOP): said and stopped here, with the way out.
+    if (await this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)) return this.#say(chatId, permit2FixedSale(info.symbol), kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
+    // The sale as an eth_call first: one that would revert is said in words and never sent, so it costs no gas. A simulation that cannot be run never stops a sale.
+    const sale = { router: this.#d.reads.router, token, amountIn: amount, minOut, deadline, poolKey };
+    const sim = await this.#d.session.simulateSell?.(link.account, sale).catch(() => undefined);
+    if (sim && !sim.ok) return this.#say(chatId, `this sale would fail on chain, so nothing was sent and no gas was spent: <b>${esc(sim.why)}</b>. your tokens are still in your account.`, kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
     await this.#say(chatId, `selling <code>${fmt(amount, info.decimals, 4)} ${esc(info.symbol)}</code> (${percent}%) from your account: about <code>${eth(quote)} ETH</code>, floor <code>${eth(minOut)}</code>…`);
     count.executes += 1;
     // The account's ETH either side of the sale is what it returned (saleProceeds); a read that fails leaves the floor on record and never stops the sale.
     const before = this.#d.positions ? await this.#d.reads.ethBalance(link.account).catch(() => undefined) : undefined;
-    const r = await this.#d.session.sell(link.account, { router: this.#d.reads.router, token, amountIn: amount, minOut, deadline, poolKey });
+    const r = await this.#d.session.sell(link.account, sale);
     await noteSent(this.#d.positions, { hash: r.hash, account: link.account, token, side: "sell", ethWei: 0n, asked: amount, ethOut: minOut, at: this.#now.toISOString() });
     if (r.landed && before !== undefined) await noteProceeds(this.#d.positions, r.hash, saleProceeds(before, await this.#d.reads.ethBalance(link.account).catch(() => before), minOut, quote));
     count.gasWei += SELL_GAS_WEI;
@@ -706,5 +714,16 @@ const toUnits = (s: string, decimals: number): bigint | null => {
   const [w = "0", f = ""] = s.split(".");
   return BigInt(w) * 10n ** BigInt(decimals) + BigInt((f + "0".repeat(decimals)).slice(0, decimals) || "0");
 };
+
+/**
+ * A token that fixes Permit2's allowance at infinity (Solady-style) refuses the exact approval `sell` makes and its reset
+ * to zero, so the session account can never sell it (2026-10-07, CHOP). The card says so before a buy, the Sell tap says
+ * so instead of sending a sale that reverts, and both name the way out: withdrawToken from the Sessions page.
+ */
+export const permit2FixedCard = (symbol: string): string =>
+  `⚠️ <b>the bot can buy ${esc(symbol)} but can't sell it from your session.</b> this token fixes its Permit2 approval at infinity, which the session's sell can't work with. to exit you'd withdraw it to your wallet on the Sessions page and sell it there.`;
+
+export const permit2FixedSale = (symbol: string): string =>
+  `${esc(symbol)} can't be sold through the session: the token fixes its Permit2 approval at infinity, and the account's sell sets an exact one, so the token refuses it every time. nothing was sent and no gas was spent.\n\nyour ${esc(symbol)} is safe in your account and only you can move it: on the Sessions page, use Withdraw token to send it to your wallet, then sell it from there.`;
 
 export type { Hex };
