@@ -31,6 +31,7 @@
     "test:fork:registry": "npx tsx --test test/fork/token-registry.test.ts",
     "test:fork:rehearsal": "npx tsx --test test/fork/mainnet-rehearsal.test.ts",
     "test:fork:buyback": "npm run build && node --test --test-reporter spec dist/test/fork/chit-buyback.test.js",
+    "test:fork:session-sell": "npm run build && node --test --test-reporter spec dist/test/fork/session-sell-permit2-fixed.test.js",
     "session-deploy:live": "npx hardhat compile && npm run build && node --env-file=.env dist/scripts/session-deploy-live.js",
     "session-demo:live": "npx hardhat compile && npm run build && node --env-file=.env dist/scripts/session-demo-live.js",
     "sponsor-deploy:live": "npx hardhat compile && npm run build && node --env-file=.env dist/scripts/sponsor-deploy-live.js",

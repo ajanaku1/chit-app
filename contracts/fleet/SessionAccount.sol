@@ -135,12 +135,20 @@ contract SessionAccount {
     bytes1 private constant COMMAND_V4_SWAP = 0x10;
     bytes private constant SELL_ACTIONS = hex"060c0f"; // SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL
 
-    /// @dev v4-periphery's parameters for one exact-in swap on one pool.
+    /// @dev v4-periphery's parameters for one exact-in swap on one pool, as the
+    ///      Universal Router on Robinhood Chain reads them: a per-hop price
+    ///      floor sits between `amountOutMinimum` and `hookData`. Without it the
+    ///      router reads `hookData`'s offset from the word after the floor and
+    ///      lands on the pool key's `currency0`, which only works while that is
+    ///      ETH (address zero, an empty hookData); measured against the 4663
+    ///      router on 2026-09-24 with a USDG pool, where it reverts. Zero leaves
+    ///      the per-hop floor off: the sale's floor is `amountOutMinimum`.
     struct ExactInputSingleParams {
         PoolKey poolKey;
         bool zeroForOne;
         uint128 amountIn;
         uint128 amountOutMinimum;
+        uint256 minHopPriceX36;
         bytes hookData;
     }
 
@@ -279,6 +287,7 @@ contract SessionAccount {
             zeroForOne: false,
             amountIn: amountIn,
             amountOutMinimum: minOut,
+            minHopPriceX36: 0,
             hookData: ""
         }));
         params[1] = abi.encode(token, uint256(amountIn));
@@ -286,12 +295,19 @@ contract SessionAccount {
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(SELL_ACTIONS, params);
 
+        // Some tokens fix Permit2's allowance at infinity for every holder and
+        // refuse any other approve to it, zero included (Solady's
+        // Permit2AllowanceIsFixedAtInfinity; CHOP on 4663, 2026-10-07). Such a
+        // token is already approved to Permit2, so its approval is neither set
+        // nor cleared here; Permit2's own allowance to the router still is, for
+        // this amount and this block, so nothing is left approved to the router.
+        bool permit2Fixed = IERC20(token).allowance(address(this), PERMIT2) == type(uint256).max;
         _executing = true;
-        IERC20(token).forceApprove(PERMIT2, amountIn);
+        if (!permit2Fixed) IERC20(token).forceApprove(PERMIT2, amountIn);
         IPermit2(PERMIT2).approve(token, router, amountIn, uint48(block.timestamp));
         (bool ok, ) = router.call(abi.encodeCall(IUniversalRouterMinimal.execute, (abi.encodePacked(COMMAND_V4_SWAP), inputs, deadline)));
         IPermit2(PERMIT2).approve(token, router, 0, 0);
-        IERC20(token).forceApprove(PERMIT2, 0);
+        if (!permit2Fixed) IERC20(token).forceApprove(PERMIT2, 0);
         _executing = false;
         if (!ok) revert CallFailed();
 
