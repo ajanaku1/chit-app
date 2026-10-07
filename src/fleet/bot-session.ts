@@ -438,7 +438,7 @@ export class SessionBot {
       ...(scan && this.#d.orus ? [`orus: ${orusLine(scan, this.#d.orus.link(token))}`] : []),
       ...(hey ? [`hey research lab: ${heyLine(hey)}`] : []),
       // Said before anyone buys: the bot can buy this token but the session can never sell it (2026-10-07, CHOP).
-      ...(fixedPermit2 ? [permit2FixedCard(info.symbol)] : []),
+      ...(fixedPermit2 ? [permit2FixedCard(info.symbol, `${this.#d.siteUrl}/app/sessions`)] : []),
       `your account holds: <code>${fmt(held, info.decimals, 4)} ${esc(info.symbol)}</code>`,
       "",
       `<i>buys run as one execute on your account, guarded at ${(this.#cfg("buySlippageBps") / 100).toString()}%; a sell is one call on your account too, guarded at ${(this.#cfg("sellSlippageBps") / 100).toString()}%, the ETH back into your account, once you turn on let it sell on the Sessions page. the reply carries the hash.${info.hooked ? " hooked pool: the hook's fee is not in the quote." : ""}</i>`,
@@ -686,7 +686,7 @@ export class SessionBot {
     const can = await this.#d.session.canSell(link.account, this.#d.reads.router, poolKey, amount, minOut, deadline);
     if (!can.ok) return this.#say(chatId, `your session says no: <b>${esc(can.why)}</b>. manage it on the Sessions page.`, kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
     // A token that fixes Permit2's allowance at infinity refuses the exact approval `sell` makes, every time (2026-10-07, CHOP): said and stopped here, with the way out.
-    if (await this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)) return this.#say(chatId, permit2FixedSale(info.symbol), kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
+    if (await this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)) return this.#say(chatId, permit2FixedSale(info.symbol), kb([url("🔑 Withdraw token to my wallet", `${sessions}#wtoken-form`), btn("← Back", `token:${token}`)]));
     // The sale as an eth_call first: one that would revert is said in words and never sent, so it costs no gas. A simulation that cannot be run never stops a sale.
     const sale = { router: this.#d.reads.router, token, amountIn: amount, minOut, deadline, poolKey };
     const sim = await this.#d.session.simulateSell?.(link.account, sale).catch(() => undefined);
@@ -720,10 +720,10 @@ const toUnits = (s: string, decimals: number): bigint | null => {
  * to zero, so the session account can never sell it (2026-10-07, CHOP). The card says so before a buy, the Sell tap says
  * so instead of sending a sale that reverts, and both name the way out: withdrawToken from the Sessions page.
  */
-export const permit2FixedCard = (symbol: string): string =>
-  `⚠️ <b>the bot can buy ${esc(symbol)} but can't sell it from your session.</b> this token fixes its Permit2 approval at infinity, which the session's sell can't work with. to exit you'd withdraw it to your wallet on the Sessions page and sell it there.`;
+export const permit2FixedCard = (symbol: string, sessionsUrl: string): string =>
+  `⚠️ <b>the bot can buy ${esc(symbol)} but can't sell it from your session.</b> this is a Clanker-style launch: the token fixes its Permit2 approval at infinity, which the session's sell can't work with. if you buy, the only way out is <a href="${sessionsUrl}#wtoken-form">Withdraw token to my wallet</a> on the Sessions page, then selling from your wallet. only you can do that; the bot cannot move tokens to your wallet.`;
 
 export const permit2FixedSale = (symbol: string): string =>
-  `${esc(symbol)} can't be sold through the session: the token fixes its Permit2 approval at infinity, and the account's sell sets an exact one, so the token refuses it every time. nothing was sent and no gas was spent.\n\nyour ${esc(symbol)} is safe in your account and only you can move it: on the Sessions page, use Withdraw token to send it to your wallet, then sell it from there.`;
+  `${esc(symbol)} can't be sold through the session: it is a Clanker-style launch that fixes its Permit2 approval at infinity, and the account's sell sets an exact one, so the token refuses it every time. nothing was sent and no gas was spent.\n\nyour ${esc(symbol)} is safe in your account and only you can move it: tap the button below, use Withdraw token to my wallet, then sell it from your wallet.`;
 
 export type { Hex };
