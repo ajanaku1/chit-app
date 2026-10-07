@@ -59,6 +59,7 @@ import type { BotLinkStore } from "./bot-link.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { esc, type Telegram } from "./bot-telegram.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor } from "./v4-swap.js";
+import { executeGasWei } from "./bot-gas.js";
 
 export type OrderKind = "limit" | "dca";
 export type OrderStatus = "open" | "done" | "cancelled" | "failed";
@@ -117,9 +118,9 @@ export const DEFAULT_MAX_PER_RUN = 20;
 export const MAX_OPEN_ORDERS = 10;
 /** A claim older than this belongs to a run the platform killed (api/bot/orders.js lives 300 s at most). */
 export const FIRING_LEASE_MS = 6 * 60_000;
-/** The same daily budget per owner a tapped Buy has (bot-session.ts), counted the same way: the gas ceiling of one execute at one gwei. */
+/** The same daily budget per owner a tapped Buy has (bot-session.ts), counted the same way: the gas ceiling of one execute at the price ceiling (bot-gas.ts). */
 const DAILY_DEFAULTS = { executes: 200, gasWei: 2_000_000_000_000_000n };
-const GAS_CEILING_WEI = 700_000n * 1_000_000_000n;
+const GAS_CEILING_WEI = executeGasWei();
 /** New sends stop once a run has been going this long, so the platform's cut-off lands between orders, not inside one. */
 const DEFAULT_RUN_BUDGET_MS = 200_000;
 
