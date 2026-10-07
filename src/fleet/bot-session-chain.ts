@@ -13,15 +13,19 @@
  * the router calldata, so the ETH lands in the account and nowhere else;
  * the Permit2 approvals live inside that one call, for the sale's amount
  * and this block, and are cleared before it returns. Nothing is approved
- * beforehand, nothing is left approved after, no allowance is ever read:
- * a sale is one send.
+ * beforehand, nothing is left approved after: a sale is one send.
+ *
+ * Before that send, two more reads keep a sale that cannot land from costing
+ * gas (2026-10-07): whether the token fixes Permit2's allowance at infinity
+ * (`permit2Fixed`; such a token refuses the exact approval `sell` makes), and
+ * the sale itself as an eth_call from the bot's key (`simulateSell`).
  */
 
-import { type Address, type Hex, type PublicClient, type Transport, type WalletClient, createPublicClient, createWalletClient, http, parseAbi, parseEventLogs } from "viem";
+import { type Address, type Hex, type PublicClient, type Transport, type WalletClient, createPublicClient, createWalletClient, decodeErrorResult, http, maxUint256, parseAbi, parseEventLogs } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { TradeReceipt } from "./bot-positions.js";
 import { robinhoodChain } from "./chain-def.js";
-import { SESSION_ACCOUNT_ABI, decodeSessionView, encodeSell, encodeSessionExecute, type SessionSell, type SessionView } from "./session-keys.js";
+import { PERMIT2, SESSION_ACCOUNT_ABI, decodeSessionView, encodeSell, encodeSessionExecute, type SessionSell, type SessionView } from "./session-keys.js";
 import { NATIVE_ETH, venuePoolKey, type PoolKey } from "./v4-swap.js";
 
 export type SessionChain = {
@@ -53,6 +57,17 @@ export type SessionChain = {
   canSell(account: Address, router: Address, poolKey: PoolKey | undefined, amountIn: bigint, minOut: bigint, deadline?: bigint): Promise<{ ok: boolean; why: string }>;
   /** `sell(router, poolKey, amountIn, minOut, deadline)` on the account, from the bot's key: the sale as one call, the ETH into the account. */
   sell(account: Address, sale: SessionSell): Promise<{ hash: Hex; landed: boolean; reverted?: boolean }>;
+  /**
+   * Whether the token fixes Permit2's allowance at infinity for this account
+   * (Solady-style tokens do, for every holder). `sell` approves Permit2 the
+   * sale's exact amount and clears it to zero after, and such a token refuses
+   * both with Permit2AllowanceIsFixedAtInfinity(), so the session can never
+   * sell it: the owner takes it out with withdrawToken instead (2026-10-07,
+   * CHOP). A failed read is "no", so the check never blocks a sale on its own.
+   */
+  permit2Fixed?(token: Address, account: Address): Promise<boolean>;
+  /** The sale as an eth_call from the bot's key, before any gas: ok, or the revert in words. A sale that would fail is never sent. */
+  simulateSell?(account: Address, sale: SessionSell): Promise<{ ok: boolean; why: string }>;
   /** A sent trade's receipt: its status, and the token's units that reached the account in it; undefined while there is none (bot-positions.ts). */
   settle?(hash: Hex, token: Address, account: Address): Promise<TradeReceipt>;
   /** Every token the chain shows the account receiving, lowercase, once each: Positions lists what it still holds (bot-positions-card.ts). */
@@ -65,6 +80,37 @@ const MIN_SPAN = 1_000n;
 const MAX_PIECES = 60;
 
 const TRANSFER = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
+const ALLOWANCE = parseAbi(["function allowance(address owner, address spender) view returns (uint256)"]);
+
+/** SessionAccount.sol's custom errors, so a simulated revert is named rather than shown as a selector (the SDK's ABI carries no errors). */
+const SESSION_ACCOUNT_ERRORS = parseAbi([
+  "error NotOwner()", "error NotAuthorized()", "error SessionExists()", "error SessionUnknown()", "error SessionRevokedError()", "error SessionPausedError()",
+  "error SessionExpired()", "error RuleNotAllowed()", "error ValueOverCall()", "error ValueOverCap()", "error NoRules()", "error TooManyRules()",
+  "error ZeroKey()", "error ZeroTarget()", "error BadExpiry()", "error CallFailed()", "error EmptyCallData()", "error ZeroRecipient()",
+  "error WithdrawFailed()", "error Reentered()", "error SellNotAllowed()", "error NotEthPool()", "error NoFloor()", "error SoldTooMuch()", "error ProceedsShort()",
+]);
+
+/** Reverts a sale meets, by selector, in words a trader reads; the account's own errors are named from its error list. */
+const KNOWN_REVERTS: Record<string, string> = {
+  "0x3f68539a": "this token fixes its Permit2 approval at infinity, so it cannot be sold through the session (Permit2AllowanceIsFixedAtInfinity)",
+};
+
+/** The revert data an eth_call failed with, found wherever viem nested it, decoded to words when it can be. */
+export const revertWords = (error: unknown): string => {
+  let data: string | undefined;
+  for (let e = error as { data?: unknown; cause?: unknown } | undefined, depth = 0; e && depth < 8; e = e.cause as typeof e, depth++) {
+    const d = typeof e.data === "string" ? e.data : (e.data as { data?: unknown } | undefined)?.data;
+    if (typeof d === "string" && d.startsWith("0x") && d.length >= 10) { data = d; break; }
+  }
+  if (data) {
+    const known = KNOWN_REVERTS[data.slice(0, 10).toLowerCase()];
+    if (known) return known;
+    try { return decodeErrorResult({ abi: SESSION_ACCOUNT_ERRORS, data: data as Hex }).errorName; } catch { /* not the account's own error */ }
+    return `reverted with ${data.slice(0, 10)}`;
+  }
+  const message = (error as { shortMessage?: string; message?: string } | undefined)?.shortMessage ?? (error as Error | undefined)?.message ?? String(error);
+  return message.split("\n")[0]!;
+};
 
 /** `receiptWaitMs`: how long one send waits for its receipt before answering with the hash alone; see RECEIPT_WAIT_MS. */
 export type SessionChainConfig = { chainId: number; rpcUrl: string; signerKey: Hex; transport?: Transport; receiptWaitMs?: number };
@@ -142,6 +188,15 @@ export const createSessionChain = (config: SessionChainConfig): SessionChain => 
       return { ok, why };
     },
     sell: (a, sale) => send(a, encodeSell(sale), SELL_GAS),
+    permit2Fixed: (token, a) => pub.readContract({ address: token, abi: ALLOWANCE, functionName: "allowance", args: [a, PERMIT2] }).then((v) => v === maxUint256, () => false),
+    async simulateSell(a, sale) {
+      try {
+        await pub.call({ account: account.address, to: a, data: encodeSell(sale), gas: SELL_GAS });
+        return { ok: true, why: "" };
+      } catch (error) {
+        return { ok: false, why: revertWords(error) };
+      }
+    },
     async heldTokens(a) {
       const tokens = new Set<string>();
       const add = (logs: readonly { address: string }[]) => { for (const l of logs) tokens.add(l.address.toLowerCase()); };

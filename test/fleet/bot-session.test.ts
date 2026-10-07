@@ -34,7 +34,7 @@ import type { OrusScan } from "../../src/fleet/bot-orus.js";
 import { SessionBot } from "../../src/fleet/bot-session.js";
 import type { SessionSell } from "../../src/fleet/session-keys.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
-import { sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
+import { revertWords, sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, minOutFor, venuePoolKey } from "../../src/fleet/v4-swap.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
@@ -1010,4 +1010,74 @@ test("a token still on its launchpad's curve gets a high-risk warning that says 
   await linked(none.links);
   await none.bot.handle(tap(`token:${CURVED}`));
   assert.match(none.textAt(-1), /has no Uniswap pool with liquidity yet, so the bot can't trade it\. high risk/);
+});
+
+// ---------- tokens that fix Permit2's allowance at infinity (2026-10-07, CHOP) ----------
+
+test("a token that fixes Permit2's allowance at infinity: the Sell tap sends nothing and says why and the way out; the card says it before a buy", async () => {
+  const { bot, links, session, telegram, buttons } = setup();
+  await linked(links);
+  session.allowSell(true);
+  const asked: { token: Address; account: Address }[] = [];
+  session.s.permit2Fixed = async (token, account) => { asked.push({ token, account }); return true; };
+  let simulated = 0;
+  session.s.simulateSell = async () => { simulated += 1; return { ok: true, why: "" }; };
+  await bot.handle(tap(`s:${PEPE}:100`));
+  assert.equal(session.sales.length, 0, "no sale is sent: it could only revert");
+  assert.equal(simulated, 0, "no simulation either: the answer is already known");
+  assert.deepEqual(asked, [{ token: PEPE, account: ACCOUNT }], "asked of the account's own allowance");
+  assert.match(telegram.last(), /PEPE can't be sold through the session: the token fixes its Permit2 approval at infinity/);
+  assert.match(telegram.last(), /nothing was sent and no gas was spent/);
+  assert.match(telegram.last(), /use Withdraw token to send it to your wallet, then sell it from there/, "the way out is named");
+  assert.ok(buttons().includes("https://chit.tools/app/sessions"), "the Sessions page is the button");
+  await bot.handle(tap(`token:${PEPE}`));
+  assert.match(telegram.last(), /the bot can buy PEPE but can't sell it from your session/, "said on the card, before anyone buys");
+});
+
+test("a token whose Permit2 allowance is not fixed carries no warning on the card, and a failed allowance read never blocks a sale", async () => {
+  const { bot, links, session, telegram } = setup();
+  await linked(links);
+  session.allowSell(true);
+  session.s.permit2Fixed = async () => false;
+  await bot.handle(tap(`token:${PEPE}`));
+  assert.doesNotMatch(telegram.last(), /can't sell it from your session/);
+  session.s.permit2Fixed = async () => { throw new Error("rpc down"); };
+  await bot.handle(tap(`s:${PEPE}:50`));
+  assert.equal(session.sales.length, 1, "the read failed, the sale still goes");
+});
+
+test("a sale the simulation says would revert is never sent: the revert in words, nothing spent, the tokens still in the account", async () => {
+  const { bot, links, session, telegram } = setup();
+  await linked(links);
+  session.allowSell(true);
+  const seen: SessionSell[] = [];
+  session.s.simulateSell = async (_a, sale) => { seen.push(sale); return { ok: false, why: "ProceedsShort" }; };
+  await bot.handle(tap(`s:${PEPE}:50`));
+  assert.equal(session.sales.length, 0, "not sent");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.amountIn, 21_000_000n, "the simulation runs the very sale the tap asked for");
+  assert.match(telegram.last(), /this sale would fail on chain, so nothing was sent and no gas was spent: <b>ProceedsShort<\/b>\. your tokens are still in your account\./);
+});
+
+test("a simulation that cannot run never stops a sale, and one that passes lets the same sale through", async () => {
+  const { bot, links, session } = setup();
+  await linked(links);
+  session.allowSell(true);
+  session.s.simulateSell = async () => { throw new Error("rpc down"); };
+  await bot.handle(tap(`s:${PEPE}:50`));
+  assert.equal(session.sales.length, 1, "no simulation, the sale goes as before");
+  session.s.simulateSell = async () => ({ ok: true, why: "" });
+  await bot.handle(tap(`s:${PEPE}:25`));
+  assert.equal(session.sales.length, 2);
+  assert.equal(session.sales[1]!.sale.amountIn, 10_500_000n, "the simulated sale is the one sent");
+});
+
+test("revertWords: the Permit2 selector in words, the account's own errors by name, anything else by selector or message", () => {
+  const nested = (data: string) => ({ shortMessage: "Execution reverted", cause: { cause: { data } } });
+  assert.match(revertWords(nested("0x3f68539a")), /fixes its Permit2 approval at infinity, so it cannot be sold through the session/);
+  assert.equal(revertWords({ data: { data: "0x3f68539a" } }), revertWords(nested("0x3f68539a")), "found however viem nests it");
+  assert.equal(revertWords(nested("0x9475ded3")), "SellNotAllowed", "SessionAccount.sol's own error, by name");
+  assert.equal(revertWords(nested("0xd44c55bc")), "ProceedsShort");
+  assert.equal(revertWords(nested("0x12345678")), "reverted with 0x12345678");
+  assert.equal(revertWords(new Error("fetch failed\nat somewhere")), "fetch failed", "no data: the message's first line");
 });
