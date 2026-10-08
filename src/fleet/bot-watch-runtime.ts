@@ -25,6 +25,12 @@
  * not a mirror lost; only a buy the desk can neither read nor keep is
  * lost, logged, not a pass.
  *
+ * After the buys, the same window goes to the risk watch (bot-risk.ts): a
+ * launchpad token's graduation, liquidity pulled from the pool of a token
+ * the bot's users hold, and a launchpad dev selling, each told once, the
+ * holders first with the exit and the group after them. It is caught on its
+ * own: a risk read that fails never fails the pass or its answer.
+ *
  * The variables, beside the session bot's own (bot-runtime.ts):
  *   CRON_SECRET                 who may be the clock; without it the route
  *                               refuses, because a pass posts to the group
@@ -73,6 +79,10 @@
  *                               the signer's
  *   BOT_DAILY_EXECUTES,         the followers' daily allowance, the same
  *   BOT_DAILY_GAS_ETH           ledger the webhook's taps and mirrors write
+ *   BOT_LAUNCHPAD_FACTORY       the launchpad (Pons V2) whose graduations and
+ *                               devs the risk watch reads; unset, it reads
+ *                               liquidity pulls only
+ *   BOT_RISK_OFF                1 turns the risk watch off; the buys still run
  *
  * One pass at a time in this instance; across instances the store's claims
  * (bot-watch.ts, one statement per hash and per hourly mark) keep a buy
@@ -97,6 +107,9 @@ import { createSessionChain, type SessionChain } from "./bot-session-chain.js";
 import { createTelegram, type Telegram } from "./bot-telegram.js";
 import { createWatchPort, MemoryWatchStore, NeonWatchStore, Watcher, type VenueBuy, type WatchPort, type WatchStore } from "./bot-watch.js";
 import { recordedPoolsFromEnv } from "./pool-registry.js";
+import { createLaunchInfo, createRiskPort, MemoryRiskStore, NeonRiskStore, RiskWatch, type LaunchInfo, type RiskDeps, type RiskPort, type RiskStore } from "./bot-risk.js";
+import type { Keyboard } from "./bot-telegram.js";
+import { createPublicClient, http } from "viem";
 import { sweepTriggerAllowed } from "./sweep-trigger.js";
 
 /** Uniswap v4 on Robinhood Chain, as bot-runtime has them (specs/001-fleet-mission/research.md). */
@@ -139,9 +152,16 @@ export const readInTurn = (readers: Reader[]) => async (b: VenueBuy): Promise<vo
 };
 
 /** For tests: the parts a pass would otherwise build from the environment and the chain; orus from outside stands in for the partner (the readers gate on its answer). */
-export type WatchRuntimeOverrides = { port?: WatchPort; store?: WatchStore; alertStore?: AlertStore; copyStore?: CopyStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: BotChain; orus?: OrusScanner };
+export type WatchRuntimeOverrides = { port?: WatchPort; store?: WatchStore; alertStore?: AlertStore; copyStore?: CopyStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: BotChain; orus?: OrusScanner; riskPort?: RiskPort; riskStore?: RiskStore; held?: RiskDeps["held"]; launch?: LaunchInfo };
 
-let watcher: { run(): Promise<{ from: bigint; to: bigint; buys: number; delivered: number }>; alerts: Alerts } | undefined;
+type Sql = { query(q: string, p?: unknown[]): Promise<readonly Record<string, unknown>[]> };
+/** What the bot's users hold, from the trade record (bot-positions.ts): the tokens traded in the last thirty days, and who traded one. */
+const heldFromSql = (sql: Sql | undefined): RiskDeps["held"] => ({
+  tokens: async () => (sql ? (await sql.query(`SELECT DISTINCT token FROM bot_session_trades WHERE at > NOW() - INTERVAL '30 days'`)).map((r) => String(r.token) as Address) : []),
+  accounts: async (token) => (sql ? (await sql.query(`SELECT DISTINCT account FROM bot_session_trades WHERE token = $1`, [token.toLowerCase()])).map((r) => String(r.account) as Address) : []),
+});
+
+let watcher: { run(): Promise<{ from: bigint; to: bigint; buys: number; delivered: number }>; alerts: Alerts; risk: RiskWatch | undefined } | undefined;
 let overrides: WatchRuntimeOverrides = {};
 let inFlight: Promise<Response> | undefined;
 
@@ -208,6 +228,25 @@ const build = () => {
     botUsername: username!,
     refuse,
   });
+  // The risk watch over the same window; in tests only when its port is handed in, so a test never reads a live chain.
+  const launchpad = process.env.BOT_LAUNCHPAD_FACTORY?.trim();
+  if (launchpad && !isAddress(launchpad)) refuse("BOT_LAUNCHPAD_FACTORY must be the launchpad factory's address");
+  const launchClient = launchpad && !overrides.launch ? createPublicClient({ transport: http(rpcUrl) }) : undefined;
+  const launch = overrides.launch ?? (launchpad && launchClient ? createLaunchInfo({ factory: launchpad as Address, readContract: (args) => launchClient.readContract(args as never) }) : undefined);
+  const riskPort = overrides.riskPort ?? (overrides.port ? undefined : createRiskPort({ chainId, rpcUrl, poolManager: POOL_MANAGER, recordedPools }));
+  const risk = process.env.BOT_RISK_OFF === "1" || !riskPort ? undefined : new RiskWatch({
+    port: riskPort,
+    store: overrides.riskStore ?? (sql ? new NeonRiskStore(sql) : new MemoryRiskStore()),
+    chainId,
+    reads,
+    links: overrides.links ?? (sql ? new NeonBotLinkStore(sql) : new MemoryBotLinkStore()),
+    held: overrides.held ?? heldFromSql(sql),
+    subs: overrides.alertStore ?? (sql ? new NeonAlertStore(sql) : new MemoryAlertStore()),
+    ...(launch ? { launch } : {}),
+    tell: (tgId, text, keyboard) => telegram.deliver({ kind: "send", chatId: tgId, text, ...(keyboard ? { keyboard } : {}) }),
+    ...(groupChatId ? { feed: { post: (text: string, keyboard: Keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }) } } : {}),
+    botUsername: username!,
+  });
   const inner = new Watcher({
     port: overrides.port ?? createWatchPort({ chainId, rpcUrl, poolManager: POOL_MANAGER, tokens, ownSenders: ownSendersFromEnv(), recordedPools }),
     store: overrides.store ?? (sql ? new NeonWatchStore(sql) : new MemoryWatchStore()),
@@ -221,11 +260,18 @@ const build = () => {
   });
   return {
     alerts,
+    risk,
     async run() {
       alerts.beginRun();
       // The desk's kept buys first, oldest first, so a buy a read failed on last pass is mirrored before this pass's are; the desk's store being down is a line, not a pass lost.
       await copy.retryVenueBuys().catch((e: unknown) => console.error(`bot watch: kept venue buys not read: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`));
-      return inner.run();
+      const r = await inner.run();
+      // The same window for the risk watch, after the buys; its own failure is a line, never the pass's.
+      if (risk) {
+        const told = await risk.run(r.from, r.to).catch((e: unknown) => { console.error(`bot risk: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`); return undefined; });
+        if (told && told.graduated + told.pulled + told.devSold > 0) console.log(`bot risk: ${JSON.stringify(told)}`);
+      }
+      return r;
     },
   };
 };
