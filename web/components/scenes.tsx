@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { FACTS, useSceneExit } from "./chrome";
-import { ago, fmtChit, fmtEth, mmss, useLive, useSecondsTo, type Burn } from "./live";
+import { ago, fmtChit, fmtEth, mmss, readingState, readingWords, useReading, useSecondsTo, type Burn } from "./live";
+import { LiveMark } from "./burn";
 import { Mark, SEAM, leftOfSeam, rightOfSeam } from "./mark";
 import { APP_HREF, APP_ORIGIN, BETA, TARGET } from "./chain";
 
@@ -504,10 +505,11 @@ export function SupplyGrid({ burned = 9 }: { burned?: number }) {
 }
 
 export function BurnScene() {
-  const live = useLive<Burn>("/api/burn", 60000);
+  const { data: live, failed } = useReading<Burn>("/api/burn", 60000);
+  const state = readingState(live, failed);
   const secs = useSecondsTo(live?.nextDueAt);
-  // Until the first reading lands, the figures are the reading taken when this page was built.
-  const pct = Math.floor((live?.burnedOfMinted ?? 0.9954) * 100) / 100;
+  // No figure until the chain has answered: a dash, never the reading of the day the page was built.
+  const pct = live ? Math.floor(live.burnedOfMinted * 100) / 100 : undefined;
   const last = live?.events?.find((e) => e.kind === "burned");
   return (
     <section id="burn" data-scene="Burn" className={`scene flex bg-void ${PAD}`}>
@@ -515,17 +517,15 @@ export function BurnScene() {
 
       <div className="relative mx-auto grid w-full max-w-wide grid-cols-1 items-center gap-12 px-6 md:px-10 lg:grid-cols-[1fr_1.1fr]">
         <div>
-          <p className="eyebrow mb-4 flex items-center gap-2.5 text-coral">
-            <span className="live-dot" /> The buyback, live from the chain
-          </p>
-          <p className="display tnum text-[clamp(96px,13vw,220px)] text-coral" aria-label={`${pct.toFixed(2)}%`} suppressHydrationWarning>
-            <CountUp value={pct.toFixed(2)} />%
+          <LiveMark state={state} label="The buyback, live from the chain" readAt={live?.readAt} className="mb-4 text-coral" />
+          <p className="display tnum text-[clamp(96px,13vw,220px)] text-coral" aria-label={pct === undefined ? readingWords(state, "") : `${pct.toFixed(2)}%`} suppressHydrationWarning>
+            {pct === undefined ? "—" : <><CountUp value={pct.toFixed(2)} />%</>}
           </p>
           <p className="mt-5 max-w-[24ch] font-display text-[clamp(26px,2.6vw,40px)] font-bold leading-[1.02] tracking-[-0.04em]">
             Of the minted billion, bought and burned. Forever.
           </p>
           <dl className="mt-6 flex flex-wrap gap-x-8 gap-y-3">
-            {[["Burned", `${fmtChit(live?.burned ?? "9954674974375619552110455")} CHIT`], ["Buys", String(live?.buys ?? 156)], ["ETH spent", fmtEth(live?.spent ?? "1030530982367212800", 2)]].map(([k, v]) => (
+            {[["Burned", live ? `${fmtChit(live.burned)} CHIT` : "—"], ["Buys", live ? String(live.buys) : "—"], ["ETH spent", live ? fmtEth(live.spent, 2) : "—"]].map(([k, v]) => (
               <div key={k}>
                 <dt className="eyebrow text-paper/45">{k}</dt>
                 <dd className="mt-1 font-mono text-[18px] tnum">{v}</dd>
@@ -550,7 +550,7 @@ export function BurnScene() {
               <span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-[2px] bg-paper/20" />Still out there</span>
             </div>
           </div>
-          <SupplyGrid burned={Math.max(1, Math.round(pct * 10))} />
+          <SupplyGrid burned={pct === undefined ? 0 : Math.max(1, Math.round(pct * 10))} />
           <div className="mt-6 grid grid-cols-1 gap-px overflow-hidden rounded-inner border border-paper/10 bg-paper/10 sm:grid-cols-2">
             <div className="bg-surface p-4">
               <p className="eyebrow text-paper/45" suppressHydrationWarning>{secs === 0 ? "Next call" : "Next call opens in"}</p>
@@ -684,18 +684,19 @@ export function Launch({ tone = "surface" }: { tone?: "surface" | "void" }) {
 
 /** The hero's live line: the burn, read from the chain, on the first screen. */
 function HeroPulse() {
-  const live = useLive<Burn>("/api/burn", 60000);
+  const { data: live, failed } = useReading<Burn>("/api/burn", 60000);
+  const state = readingState(live, failed);
   const secs = useSecondsTo(live?.nextDueAt);
-  const pct = Math.floor((live?.burnedOfMinted ?? 0.9954) * 100) / 100;
+  const pct = live ? Math.floor(live.burnedOfMinted * 100) / 100 : undefined;
   return (
-    <p className="flex min-h-6 items-center gap-2.5 font-mono text-[11px] uppercase leading-snug tracking-[0.16em] text-paper/70 md:whitespace-nowrap md:text-[12px] md:tracking-[0.18em]">
+    <p className="flex min-h-6 items-center gap-2.5 font-mono text-[11px] uppercase leading-snug tracking-[0.16em] text-paper/70 md:whitespace-nowrap md:text-[12px] md:tracking-[0.18em]" suppressHydrationWarning>
       <span className="relative flex h-2 w-2 shrink-0">
-        <span className="absolute inset-0 animate-ping rounded-full bg-coral/60" />
-        <span className="relative h-2 w-2 rounded-full bg-coral" />
+        {state === "live" && <span className="absolute inset-0 animate-ping rounded-full bg-coral/60" />}
+        <span className={`relative h-2 w-2 rounded-full ${state === "live" ? "bg-coral" : state === "stale" ? "bg-[#e0a64b]" : "bg-paper/30"}`} />
       </span>
       <span>
-        $CHIT {pct.toFixed(2)}% burned
-        <span className="hidden md:inline" suppressHydrationWarning> · {secs === 0 ? "buyback open now" : `next buyback ${mmss(secs)}`}</span>
+        {pct === undefined ? readingWords(state, "") : `$CHIT ${pct.toFixed(2)}% burned`}
+        {live && <span className="hidden md:inline"> · {state === "stale" ? `as of ${ago(live.readAt)}` : secs === 0 ? "buyback open now" : `next buyback ${mmss(secs)}`}</span>}
       </span>
     </p>
   );
