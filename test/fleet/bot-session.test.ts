@@ -31,7 +31,7 @@ import { MemoryBotLinkStore } from "../../src/fleet/bot-link.js";
 import { MemoryPositionLedger } from "../../src/fleet/bot-positions.js";
 import { MemoryCompStore } from "../../src/fleet/bot-comp.js";
 import type { OrusScan } from "../../src/fleet/bot-orus.js";
-import { SessionBot } from "../../src/fleet/bot-session.js";
+import { SessionBot, parseTokenLink } from "../../src/fleet/bot-session.js";
 import type { SessionSell } from "../../src/fleet/session-keys.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 import { revertWords, sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
@@ -1142,4 +1142,59 @@ test("orders: a take profit and a stop loss are offered over a position only; th
   await bot.handle(tap("orders"));
   assert.match(telegram.last(), /1\. 🎯 take profit: sell <code>100%<\/code>.*\n2\. 🛑 stop loss: sell <code>50%<\/code> of your <b>PEPE<\/b> once one ETH buys <code>1142857.14 PEPE<\/code> or more/);
   assert.match(telegram.last(), /sells only while let it sell is on/);
+});
+
+// ---------- one-tap links (2026-10-08): t-<token> and t-<token>-<code> ----------
+
+const startWith = (param: string, updateId?: number): Update => ({ ...(updateId !== undefined ? { update_id: updateId } : {}), message: { message_id: 1, text: `/start ${param}`, chat: { id: 7, type: "private" }, from: { id: 7 } } });
+
+test("a one-tap link before linking shows the token's card with Connect and no buy, and the same token is shown the first time the person opens the bot linked", async () => {
+  const { bot, telegram, buttons, links } = setup();
+  await bot.handle(startWith(`t-${PEPE}`));
+  assert.match(telegram.last(), /<b>PEPE<\/b>/, "the token's card, not home");
+  assert.match(telegram.last(), /Connect your wallet to buy it/);
+  assert.match(telegram.last(), /not audited by a firm yet/);
+  assert.deepEqual(buttons(), ["connect", "help"], "no buy, no sell");
+  await linked(links);
+  await bot.handle(dm("/start"));
+  assert.match(telegram.last(), /<b>PEPE<\/b>/, "linked now: the token the link was about");
+  assert.ok(buttons().includes(`b:${PEPE}:0.005`), "with its buy buttons");
+  await bot.handle(dm("/start"));
+  assert.match(telegram.last(), /session <b>active<\/b>/, "once: the next /start is home");
+});
+
+test("a one-tap link with a code notes the referral once, a redelivered update notes nothing, and a linked person's link opens the full card", async () => {
+  const arrived: { tgId: string; code: string }[] = [];
+  const { bot, telegram, buttons, links } = setup({ referrals: { arrived: async (tgId, code) => { arrived.push({ tgId, code }); } } });
+  await linked(links);
+  await bot.handle(startWith(`t-${PEPE}-GOLDEN1`, 500));
+  assert.deepEqual(arrived, [{ tgId: "7", code: "golden1" }], "noted, lowercased");
+  assert.match(telegram.last(), /<b>PEPE<\/b>/);
+  assert.ok(buttons().includes(`b:${PEPE}:0.005`), "linked: the full card");
+  await bot.handle(startWith(`t-${PEPE}-GOLDEN1`, 500));
+  assert.equal(arrived.length, 1, "the same update again notes nothing");
+  await bot.handle(startWith(`t-${PEPE}-GOLDEN1`, 501));
+  assert.equal(arrived.length, 2, "a new tap of the link is a new arrival; the store decides what counts");
+});
+
+test("a referral store that fails never stops the card; a malformed link goes home; a mixed-case address finds the token", async () => {
+  const { bot, telegram, links } = setup({ referrals: { arrived: async () => { throw new Error("store down"); } } });
+  await linked(links);
+  await bot.handle(startWith(`t-${PEPE}-abc`));
+  assert.match(telegram.last(), /<b>PEPE<\/b>/, "the door opens without the note");
+  await bot.handle(startWith("t-notatoken"));
+  assert.match(telegram.last(), /session <b>active<\/b>/, "home");
+  await bot.handle(startWith(`t-${PEPE}-toolongcode9`));
+  assert.match(telegram.last(), /session <b>active<\/b>/, "a code over 8 characters is not a link");
+  await bot.handle(startWith(`t-${PEPE.toUpperCase().replace("0X", "0x")}`));
+  assert.match(telegram.last(), /<b>PEPE<\/b>/, "the address in upper case is the same token");
+});
+
+test("parseTokenLink: the two shapes, and what is not a link", () => {
+  assert.deepEqual(parseTokenLink(`t-${PEPE}`), { token: PEPE });
+  assert.deepEqual(parseTokenLink(`t-${PEPE}-Ab1`), { token: PEPE, code: "ab1" });
+  assert.equal(parseTokenLink("t-0x123"), "malformed");
+  assert.equal(parseTokenLink(`t-${PEPE}-`), "malformed");
+  assert.equal(parseTokenLink("f-0xabc"), undefined, "the copy desk's door is not ours");
+  assert.equal(parseTokenLink("r-code"), undefined);
 });

@@ -93,6 +93,11 @@ balance: 0.02 ETH
   the card says so on the testnet playground. `BOT_BRIDGE_OFF=1` hides it.
 - **Deep links**: `t.me/<bot>?start=t-<contract>` opens that token's card,
   for a partner's "trade in chit bot" button or a group's pinned message.
+  Someone not yet linked sees the card without buy buttons and a Connect
+  button, and lands on the same card the first time they open the bot
+  linked. `t-<contract>-<code>` does the same and notes the referral code
+  (at most 8 characters; Telegram allows 64 in `start`) so that referrals
+  made during the beta count from the first day of fees.
 - **Share** (📸 on Positions): the position as a picture, the kind people
   post when a trade went their way: the symbol, the change as one big
   number, what was paid and what the pool would fill right now, and the
