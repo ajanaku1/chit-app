@@ -90,3 +90,27 @@ test("BOT_ORDERS_OFF=1 stops the clock: the route answers off and acts on no ord
     setOrdersDepsForTests({});
   }
 });
+
+test("the same pass tells an owner whose session ends within three days, once, with the Renew button", async () => {
+  const { MemoryExpiryNoteStore } = await import("../../src/fleet/bot-expiry.js");
+  const links = new MemoryBotLinkStore();
+  const telegram = new RecordingTelegram();
+  const session = {
+    chainId: 4663, signer: "0x00000000000000000000000000000000000000b0",
+    async sessionOf() { return { exists: true, paused: false, revoked: false, expiry: Math.floor(clock.getTime() / 1000) + 48 * 3600, maxValuePerCall: "0", totalValueCap: "0", spentValue: "0", calls: 0 }; },
+  } as unknown as SessionChain;
+  setOrdersDepsForTests({ orders: new MemoryOrderStore(), links, session, telegram, reads: {} as BotChain, notes: new MemoryExpiryNoteStore() });
+  const saved = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = "s3cret-s3cret-s3cret";
+  try {
+    await links.putLink({ tgId: "7", account: ACCOUNT, owner: ACCOUNT, chainId: 4663, nonce: "n", signature: "0x00", linkedAt: clock.toISOString() });
+    const r = await handleOrdersRequest(req("Bearer s3cret-s3cret-s3cret"), clock);
+    assert.deepEqual(await r.json(), { state: "ran", fired: 0, landed: 0, refused: 0, waited: 0 }, "no orders, the answer is the orders'");
+    assert.match(telegram.last(), /your session with the bot ends in 48 hours/);
+    await handleOrdersRequest(req("Bearer s3cret-s3cret-s3cret"), clock);
+    assert.equal(telegram.sent.length, 1, "once");
+  } finally {
+    if (saved === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = saved;
+    setOrdersDepsForTests({});
+  }
+});

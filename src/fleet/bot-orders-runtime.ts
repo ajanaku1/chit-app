@@ -29,6 +29,10 @@
  *                               and quote are the recorded pool's, as the
  *                               session bot's are (pool-registry.ts)
  *
+ * The same pass then tells owners whose session with the bot ends within
+ * three days, or has ended, once each with the Renew button (bot-expiry.ts);
+ * the notes it keeps sit beside the orders in DATABASE_URL.
+ *
  * One pass at a time in this instance, and across instances the store's
  * claim (bot-orders.ts): two pingers landing together, or a run the platform
  * killed mid-send, never fire the same order twice.
@@ -43,6 +47,7 @@ import { createBotChain } from "./bot-chain.js";
 import { recordedPoolsFromEnv } from "./pool-registry.js";
 import { MemoryBotLinkStore, NeonBotLinkStore, type BotLinkStore } from "./bot-link.js";
 import { MemoryOrderStore, NeonOrderStore, OrderRunner, type OrderStore } from "./bot-orders.js";
+import { ExpiryNotifier, MemoryExpiryNoteStore, NeonExpiryNoteStore, type ExpiryNoteStore } from "./bot-expiry.js";
 import { createSessionChain, type SessionChain } from "./bot-session-chain.js";
 import { createTelegram, type Telegram } from "./bot-telegram.js";
 import { sweepTriggerAllowed } from "./sweep-trigger.js";
@@ -55,9 +60,9 @@ const VENUE_TOKEN: Address = "0x13283ab8e1f2bc4297e9ec6480c80c59674af554";
 const MAINNET = 4663;
 const TESTNET = 46630;
 
-export type OrdersRuntimeOverrides = { orders?: OrderStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: ReturnType<typeof createBotChain> };
+export type OrdersRuntimeOverrides = { orders?: OrderStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: ReturnType<typeof createBotChain>; notes?: ExpiryNoteStore };
 
-let runner: OrderRunner | undefined;
+let built: { runner: OrderRunner; expiry: ExpiryNotifier } | undefined;
 let overrides: OrdersRuntimeOverrides = {};
 let inFlight: Promise<Response> | undefined;
 
@@ -74,7 +79,7 @@ const sqlFromEnv = () => {
   return undefined;
 };
 
-const build = (): OrderRunner => {
+const build = (): { runner: OrderRunner; expiry: ExpiryNotifier } => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token && !overrides.telegram) refuse("TELEGRAM_BOT_TOKEN is not set");
   const signerKey = process.env.BOT_SIGNER_PRIVATE_KEY;
@@ -94,24 +99,30 @@ const build = (): OrderRunner => {
   const sql = overrides.orders && overrides.links ? undefined : sqlFromEnv();
   const reads = overrides.reads ?? createBotChain({ chainId, rpcUrl, defaultToken: allowlist[0] ?? VENUE_TOKEN, router: ROUTER, poolManager: POOL_MANAGER, recordedPools: recordedPoolsFromEnv(refuse) });
   const holders = holdersGateFromEnv((t, o) => (reads.tokenBalanceStrict ?? reads.tokenBalance)(t, o));
-  return new OrderRunner({
+  const links = overrides.links ?? (sql ? new NeonBotLinkStore(sql) : new MemoryBotLinkStore());
+  const session = overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as Hex });
+  const telegram = overrides.telegram ?? createTelegram(token!);
+  const notes = overrides.notes ?? (sql ? new NeonExpiryNoteStore(sql) : new MemoryExpiryNoteStore());
+  const expiry = new ExpiryNotifier({ links, session, telegram, notes });
+  const runner = new OrderRunner({
     orders: overrides.orders ?? (sql ? new NeonOrderStore(sql) : new MemoryOrderStore()),
-    links: overrides.links ?? (sql ? new NeonBotLinkStore(sql) : new MemoryBotLinkStore()),
+    links,
     reads,
     ...(holders ? { holders } : {}),
-    session: overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as Hex }),
+    session,
     positions: positionLedgerFromEnv(),
-    telegram: overrides.telegram ?? createTelegram(token!),
+    telegram,
     ...(perRun !== undefined ? { maxPerRun: perRun } : {}),
     ...(dailyExecutes !== undefined ? { dailyExecutes } : {}),
     ...(dailyGas ? { dailyGasWei: parseEther(dailyGas) } : {}),
   });
+  return { runner, expiry };
 };
 
 /** For tests: the runner's parts from outside, and a fresh build on the next request. */
 export const setOrdersDepsForTests = (o: OrdersRuntimeOverrides): void => {
   overrides = o;
-  runner = undefined;
+  built = undefined;
 };
 
 const json = (body: unknown, status: number): Response => Response.json(body, { status, headers: { "cache-control": "no-store" } });
@@ -126,10 +137,13 @@ export const handleOrdersRequest = async (request: Request, now = new Date()): P
   if (inFlight) return json({ state: "in_flight" }, 200);
   inFlight = (async () => {
     try {
-      runner ??= build();
-      const report = await runner.run(now);
+      built ??= build();
+      const report = await built.runner.run(now);
       // One line a pass, so an order that is skipped without a word can be seen from the logs (2026-10-01: a DCA that never fired).
       console.log(`bot orders: ${JSON.stringify(report)}`);
+      // The sessions' ends after the orders, so a slow pass of reads never holds an order back; a failure here never fails the pass.
+      const told = await built.expiry.run(now).catch((e: unknown) => { console.error(`bot expiry: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`); return undefined; });
+      if (told && told.soon + told.ended > 0) console.log(`bot expiry: ${JSON.stringify(told)}`);
       return json({ state: "ran", ...report }, 200);
     } catch (e) {
       if (e instanceof ConfigFault) return json({ state: "not_configured", reason: e.message }, 503);
