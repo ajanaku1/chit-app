@@ -447,12 +447,12 @@ export function Competition() {
         <div>
           <p className="eyebrow mb-4 text-coral">Trading competition · $1,000 in USDG</p>
           <h2 className="display text-[clamp(44px,6.6vw,108px)]">
-            Seven days.
+            All of October.
             <br />
             <span className="text-coral">Best return wins.</span>
           </h2>
           <p className="mt-6 max-w-[52ch] text-[15px] leading-relaxed text-paper/60">
-            Trade from the bot between 2 and 9 October, noon UTC to noon UTC. Best pnl takes $500, the best open trade at the end $350, the best bug report $150. Holders only, nicknames only: no wallet is ever shown.
+            Trade from the bot between 2 and 31 October, noon UTC to noon UTC. Best pnl takes $500, the best open trade at the end $350, the best bug report $150. Holders only, nicknames only: no wallet is ever shown.
           </p>
           <div className="mt-7 flex flex-wrap gap-2">
             <a href={`${APP_ORIGIN}/app/board`} className="flex items-center gap-2 rounded-full bg-coral py-2.5 pl-6 pr-2.5 text-[15px] font-medium text-ink transition-colors hover:bg-coral-lift">

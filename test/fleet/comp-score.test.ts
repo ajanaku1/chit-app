@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BotTrade } from "../../src/fleet/bot-positions.js";
-import { FIRST_COMPETITION, countedTrades, scoreCompetition, scoreEntrant, type Entrant, type Holding, type ScoreRules } from "../../src/fleet/comp-score.js";
+import { FIRST_COMPETITION, FIRST_COMPETITION_EXTENDED, countedTrades, scoreCompetition, scoreEntrant, type Entrant, type Holding, type ScoreRules } from "../../src/fleet/comp-score.js";
 import type { Address, Hex } from "../../src/fleet/types.js";
 
 const A = "0x00000000000000000000000000000000000000a1" as Address;
@@ -71,4 +71,13 @@ test("the first competition: 2 to 9 October 2026 noon UTC, 0.0005 ETH a trade, f
   assert.deepEqual([FIRST_COMPETITION.start.toISOString(), FIRST_COMPETITION.end.toISOString(), FIRST_COMPETITION.minWei, FIRST_COMPETITION.minTrades], ["2026-10-02T12:00:00.000Z", "2026-10-09T12:00:00.000Z", 500_000_000_000_000n, 5]);
   const early = buy(A, 10n ** 16n, 10n, "2026-10-02T11:59:59Z"), first = buy(A, 10n ** 16n, 10n, "2026-10-02T12:00:00Z"), last = buy(A, 10n ** 16n, 10n, "2026-10-09T11:59:59Z"), late = buy(A, 10n ** 16n, 10n, "2026-10-09T12:00:00Z");
   assert.deepEqual(countedTrades([early, first, last, late], FIRST_COMPETITION), [first, last]);
+});
+
+test("the extension of 2026-10-08: the same start, size and trade count, the close at 31 October noon UTC; a trade at 11:59 on the 31st is in, one at noon is out", () => {
+  assert.equal(FIRST_COMPETITION_EXTENDED.start.toISOString(), FIRST_COMPETITION.start.toISOString());
+  assert.equal(FIRST_COMPETITION_EXTENDED.minWei, FIRST_COMPETITION.minWei);
+  assert.equal(FIRST_COMPETITION_EXTENDED.minTrades, FIRST_COMPETITION.minTrades);
+  assert.equal(FIRST_COMPETITION_EXTENDED.end.toISOString(), "2026-10-31T12:00:00.000Z");
+  assert.ok(new Date("2026-10-31T11:59:59Z") < FIRST_COMPETITION_EXTENDED.end);
+  assert.ok(!(new Date("2026-10-31T12:00:00Z") < FIRST_COMPETITION_EXTENDED.end));
 });
