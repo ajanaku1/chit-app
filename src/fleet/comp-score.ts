@@ -39,6 +39,9 @@ export const PRIZES: Prize[] = [
 /** The first competition, as announced: 2 to 9 October 2026, noon UTC to noon UTC, 0.0005 ETH a trade, five trades. */
 export const FIRST_COMPETITION: ScoreRules = { start: new Date("2026-10-02T12:00:00Z"), end: new Date("2026-10-09T12:00:00Z"), minWei: 500_000_000_000_000n, minTrades: 5 };
 
+/** The first competition as extended on 2026-10-08: the same start and rules, the close moved to 31 October 2026, noon UTC. The board, the bot and the scorer run on this one. */
+export const FIRST_COMPETITION_EXTENDED: ScoreRules = { ...FIRST_COMPETITION, end: new Date("2026-10-31T12:00:00Z") };
+
 const bps = (gain: bigint, cost: bigint): number => (cost === 0n ? 0 : Number((gain * 10_000n) / cost));
 const share = (whole: bigint, part: bigint, of: bigint): bigint => (of === 0n ? 0n : (whole * part) / of);
 const min = (a: bigint, b: bigint): bigint => (a < b ? a : b);
