@@ -66,7 +66,7 @@ export type SessionChain = {
    * CHOP). A failed read is "no", so the check never blocks a sale on its own.
    */
   permit2Fixed?(token: Address, account: Address): Promise<boolean>;
-  /** The sale as an eth_call from the bot's key, before any gas: ok, or the revert in words. A sale that would fail is never sent. */
+  /** The sale as an eth_call from the bot's key, before any gas: ok, or the revert in words. A sale that would fail is never sent. Rejects when the chain could not be asked, which is not a verdict. */
   simulateSell?(account: Address, sale: SessionSell): Promise<{ ok: boolean; why: string }>;
   /** A sent trade's receipt: its status, and the token's units that reached the account in it; undefined while there is none (bot-positions.ts). */
   settle?(hash: Hex, token: Address, account: Address): Promise<TradeReceipt>;
@@ -95,8 +95,12 @@ const KNOWN_REVERTS: Record<string, string> = {
   "0x3f68539a": "this token fixes its Permit2 approval at infinity, so it cannot be sold through the session (Permit2AllowanceIsFixedAtInfinity)",
 };
 
-/** The revert data an eth_call failed with, found wherever viem nested it, decoded to words when it can be. */
-export const revertWords = (error: unknown): string => {
+/**
+ * What an eth_call failed with: `reverted` when the chain itself refused it (revert data found wherever viem nested it, or a
+ * message that says reverted), and the failure in words. Anything else (the RPC down, a timeout, a rate limit) is not the
+ * chain's verdict on the sale, and `reverted` is false so a caller can tell "would fail" from "could not ask" (2026-10-07).
+ */
+export const revertOf = (error: unknown): { reverted: boolean; why: string } => {
   let data: string | undefined;
   for (let e = error as { data?: unknown; cause?: unknown } | undefined, depth = 0; e && depth < 8; e = e.cause as typeof e, depth++) {
     const d = typeof e.data === "string" ? e.data : (e.data as { data?: unknown } | undefined)?.data;
@@ -104,13 +108,17 @@ export const revertWords = (error: unknown): string => {
   }
   if (data) {
     const known = KNOWN_REVERTS[data.slice(0, 10).toLowerCase()];
-    if (known) return known;
-    try { return decodeErrorResult({ abi: SESSION_ACCOUNT_ERRORS, data: data as Hex }).errorName; } catch { /* not the account's own error */ }
-    return `reverted with ${data.slice(0, 10)}`;
+    if (known) return { reverted: true, why: known };
+    try { return { reverted: true, why: decodeErrorResult({ abi: SESSION_ACCOUNT_ERRORS, data: data as Hex }).errorName }; } catch { /* not the account's own error */ }
+    return { reverted: true, why: `reverted with ${data.slice(0, 10)}` };
   }
   const message = (error as { shortMessage?: string; message?: string } | undefined)?.shortMessage ?? (error as Error | undefined)?.message ?? String(error);
-  return message.split("\n")[0]!;
+  const why = message.split("\n")[0]!;
+  return { reverted: /revert/i.test(why), why };
 };
+
+/** The failure in words alone; see revertOf. */
+export const revertWords = (error: unknown): string => revertOf(error).why;
 
 /** `receiptWaitMs`: how long one send waits for its receipt before answering with the hash alone; see RECEIPT_WAIT_MS. */
 export type SessionChainConfig = { chainId: number; rpcUrl: string; signerKey: Hex; transport?: Transport; receiptWaitMs?: number };
@@ -194,7 +202,10 @@ export const createSessionChain = (config: SessionChainConfig): SessionChain => 
         await pub.call({ account: account.address, to: a, data: encodeSell(sale), gas: SELL_GAS });
         return { ok: true, why: "" };
       } catch (error) {
-        return { ok: false, why: revertWords(error) };
+        // Only the chain's own refusal is "would fail". An RPC that could not be asked is thrown, and the caller treats it as no simulation at all.
+        const r = revertOf(error);
+        if (!r.reverted) throw error;
+        return { ok: false, why: r.why };
       }
     },
     async heldTokens(a) {

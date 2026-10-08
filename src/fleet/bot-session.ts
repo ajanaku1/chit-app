@@ -724,6 +724,6 @@ export const permit2FixedCard = (symbol: string, sessionsUrl: string): string =>
   `⚠️ <b>the bot can buy ${esc(symbol)} but can't sell it from your session.</b> this is a Clanker-style launch: the token fixes its Permit2 approval at infinity, which the session's sell can't work with. if you buy, the only way out is <a href="${sessionsUrl}#wtoken-form">Withdraw token to my wallet</a> on the Sessions page, then selling from your wallet. only you can do that; the bot cannot move tokens to your wallet.`;
 
 export const permit2FixedSale = (symbol: string): string =>
-  `${esc(symbol)} can't be sold through the session: it is a Clanker-style launch that fixes its Permit2 approval at infinity, and the account's sell sets an exact one, so the token refuses it every time. nothing was sent and no gas was spent.\n\nyour ${esc(symbol)} is safe in your account and only you can move it: tap the button below, use Withdraw token to my wallet, then sell it from your wallet.`;
+  `${esc(symbol)} can't be sold through the session: it is a Clanker-style launch that fixes its Permit2 approval at infinity, and the account's sell sets an exact one, so the token refuses it every time. nothing was sent and no gas was spent.\n\nyour ${esc(symbol)} is still in your account and only you can move it: tap the button below, use Withdraw token to my wallet, then sell it from your wallet.`;
 
 export type { Hex };
