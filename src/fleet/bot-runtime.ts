@@ -155,6 +155,7 @@ import { createUsdPrice } from "./bot-usd-price.js";
 import { timingSafeEqual } from "node:crypto";
 
 import { neon } from "@neondatabase/serverless";
+import { NeonPoolStore, type PoolStore } from "./pool-store.js";
 import { isHex, parseEther, createPublicClient, http } from "viem";
 
 import { isAddress, type Address } from "./types.js";
@@ -221,6 +222,14 @@ export const testnetHost = (): string | undefined => {
   if (!raw) return undefined;
   if (!/^https:\/\/[^\s/]+/.test(raw)) throw new Error(`FLEET_TESTNET_URL must be an https URL, got ${raw}`);
   return raw.replace(/\/+$/, "");
+};
+
+/** Pools found once, kept in the database for every instance (pool-store.ts); none without a database, so a scan is per instance as before. */
+const poolStoreFromEnv = (): PoolStore | undefined => {
+  const url = process.env.DATABASE_URL;
+  if (!url) return undefined;
+  const sql = neon(url);
+  return new NeonPoolStore({ query: (query, params) => sql.query(query, params) as Promise<readonly Record<string, unknown>[]> });
 };
 
 const storeFromEnv = (): BotWalletStore => {
@@ -352,7 +361,8 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
   const orders = overrides.orders ?? ordersFromEnv();
   // alerts: the 🔔 card writes a line per user; the watcher's cron (api/bot/watch.js) reads it.
   const alerts = overrides.alertStore ?? alertsFromEnv();
-  const reads = createBotChain({ chainId, rpcUrl, defaultToken: allowlist[0] ?? TESTNET_VENUE_TOKEN, router: ROUTER, poolManager: POOL_MANAGER, recordedPools: recordedPoolsFromEnv(refuse) });
+  const poolStore = poolStoreFromEnv();
+  const reads = createBotChain({ chainId, rpcUrl, defaultToken: allowlist[0] ?? TESTNET_VENUE_TOKEN, router: ROUTER, poolManager: POOL_MANAGER, recordedPools: recordedPoolsFromEnv(refuse), ...(poolStore ? { poolStore } : {}) });
   const usdToken = usdTokenFromEnv();
   const holders = holdersGateFromEnv((t, o) => (reads.tokenBalanceStrict ?? reads.tokenBalance)(t, o));
   // BOT_LAUNCHPAD_FACTORY (PonsV2LaunchFactory): a token with no Uniswap pool is checked for a launch still on its curve, for the card's warning.
@@ -420,8 +430,10 @@ const build = (overrides: BotOverrides = {}): ChitBot => {
   const faucetWei = ethFromEnv("BOT_FAUCET_ETH");
   const faucetDailyWei = ethFromEnv("BOT_FAUCET_DAILY_ETH");
 
+  const poolStore = poolStoreFromEnv();
   const chain = createBotChain({
     chainId,
+    ...(poolStore ? { poolStore } : {}),
     rpcUrl: process.env.FLEET_RPC_URL || process.env.ROBINHOOD_TESTNET_RPC_URL || "https://rpc.testnet.chain.robinhood.com",
     defaultToken: token0,
     router: ROUTER,

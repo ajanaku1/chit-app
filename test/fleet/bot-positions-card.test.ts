@@ -65,3 +65,13 @@ test("holdings the account had before the record began are found on chain and sh
   assert.doesNotMatch(card.text, /c3|GIFT.*GIFT/s, "the spam token is not listed, and GIFT once");
   assert.deepEqual(card.tokens.map((t) => t.token), [GIFT]);
 });
+
+test("a balance that cannot be read is said as such for a token the bot bought, never shown as sold out", async () => {
+  const ledger = await ledgerWith(buy(1, PEPE, "0.01"));
+  const settle = async () => ({ status: "success" as const, received: 1_000n * UNIT });
+  const blip = { ...reads, async tokenBalanceStrict() { throw new Error("rpc 502"); } } as unknown as BotChain;
+  const card = await positionsCard({ ledger, settle, reads: blip }, ACCOUNT, { unit: "eth" });
+  assert.match(card.text, /<b>PEPE<\/b> · balance not read this time, tap Refresh/);
+  assert.doesNotMatch(card.text, /no positions yet/);
+  assert.deepEqual(card.tokens.map((t) => t.symbol), ["PEPE"], "the card still offers the token");
+});
