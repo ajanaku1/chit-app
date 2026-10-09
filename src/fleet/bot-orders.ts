@@ -48,19 +48,32 @@
  * has the same daily budget of executes and fronted gas a tapped Buy has,
  * counted from a ledger every claim writes; over it, their orders wait for
  * tomorrow. An account keeps at most `MAX_OPEN_ORDERS` open at once.
+ *
+ * A take profit and a stop loss are the sell side of the same machinery: a
+ * share of whatever the account holds when the level is reached, sold as
+ * the one `sell` call a tapped Sell is, on the account's own flag (let it
+ * sell) and in the contract's words when it refuses. The level is tokens per
+ * ETH like a limit's: a take profit fires when one ETH buys at most that
+ * many tokens (the price per token rose to the level), a stop loss when it
+ * buys at least that many (the price fell to it). A take profit fills at the
+ * level or better, the level being its floor the way it is a limit buy's; a
+ * stop loss is a way out, so its floor is the sell slippage only. Neither
+ * asks the $CHIT holders line: a sale is never held back by it. Each fires
+ * once and closes, with the same claim, cut-off and settle rules as a limit.
  */
 
 import type { HoldersGate } from "./bot-holders.js";
-import { noteSent, type PositionLedger } from "./bot-positions.js";
+import { noteProceeds, noteSent, saleProceeds, type PositionLedger } from "./bot-positions.js";
 import { randomBytes } from "node:crypto";
 import type { Address, Hex } from "viem";
 import type { BotChain } from "./bot-chain.js";
 import type { BotLinkStore } from "./bot-link.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { esc, type Telegram } from "./bot-telegram.js";
-import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor } from "./v4-swap.js";
+import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor, venuePoolKey } from "./v4-swap.js";
 
-export type OrderKind = "limit" | "dca";
+/** limit and dca buy; tp (take profit) and sl (stop loss) sell a share of the position. */
+export type OrderKind = "limit" | "dca" | "tp" | "sl";
 export type OrderStatus = "open" | "done" | "cancelled" | "failed";
 
 export type Order = {
@@ -72,10 +85,12 @@ export type Order = {
   chainId: number;
   token: Address;
   kind: OrderKind;
-  /** ETH per buy. */
+  /** ETH per buy; zero on a take profit or a stop loss. */
   ethWei: bigint;
-  /** Limit: tokens per ETH in the token's base units; fires when the pool's perEth is at or above it. */
+  /** Limit and stop loss: tokens per ETH in the token's base units, fires when the pool's perEth is at or above it. Take profit: at or below it. */
   triggerPerEth?: bigint;
+  /** Take profit and stop loss: the percent (1 to 100) of what the account holds when the level is reached. */
+  sellPct?: number;
   /** DCA: the interval, how many buys are left, and when the next one is due (ISO). */
   everyMs?: number;
   remaining?: number;
@@ -120,6 +135,8 @@ export const FIRING_LEASE_MS = 6 * 60_000;
 /** The same daily budget per owner a tapped Buy has (bot-session.ts), counted the same way: the gas ceiling of one execute at one gwei. */
 const DAILY_DEFAULTS = { executes: 200, gasWei: 2_000_000_000_000_000n };
 const GAS_CEILING_WEI = 700_000n * 1_000_000_000n;
+/** A sell's gas ceiling at one gwei, as a tapped Sell counts it (bot-session.ts). */
+const SELL_GAS_CEILING_WEI = 1_000_000n * 1_000_000_000n;
 /** New sends stop once a run has been going this long, so the platform's cut-off lands between orders, not inside one. */
 const DEFAULT_RUN_BUDGET_MS = 200_000;
 
@@ -132,9 +149,9 @@ const DEFAULT_RUN_BUDGET_MS = 200_000;
 export const due = (orders: readonly Order[], now: Date, perEthOf: (token: Address) => bigint | undefined): Order[] =>
   orders.filter((o) => {
     if (o.status !== "open" || o.firingAt) return false;
-    if (o.kind === "limit") {
+    if (o.kind !== "dca") {
       const perEth = perEthOf(o.token);
-      return o.triggerPerEth !== undefined && perEth !== undefined && perEth >= o.triggerPerEth;
+      return o.triggerPerEth !== undefined && perEth !== undefined && atLevel(o, perEth);
     }
     return o.nextAt !== undefined && (o.remaining ?? 0) > 0 && Date.parse(o.nextAt) <= now.getTime();
   });
@@ -147,6 +164,15 @@ export const fair = (orders: readonly Order[]): Order[] => {
   for (let i = 0; out.length < orders.length; i++) for (const q of byOwner.values()) if (q[i]) out.push(q[i]!);
   return out;
 };
+
+/** Whether the pool's tokens per ETH has reached the order's level: fewer per ETH is a higher price, which is a take profit's side. */
+export const atLevel = (o: Order, perEth: bigint): boolean => {
+  const level = o.triggerPerEth ?? 0n;
+  return o.kind === "tp" ? perEth <= level : perEth >= level;
+};
+
+/** The ETH a take profit's tokens fetch at its level: what the sale must return at least. */
+export const levelEthOut = (o: Order, tokensIn: bigint): bigint => (o.triggerPerEth ? (tokensIn * 10n ** 18n) / o.triggerPerEth : 0n);
 
 /** The tokens one ETH buys at the level: what a limit buy must get at least. */
 export const levelOut = (o: Order): bigint => (o.ethWei * (o.triggerPerEth ?? 0n)) / 10n ** 18n;
@@ -162,6 +188,8 @@ export type OrderRunnerDeps = {
   holders?: HoldersGate;
   telegram: Telegram;
   buySlippageBps?: number;
+  /** The floor of a take profit's or stop loss's sale under its quote; a tapped Sell's default. */
+  sellSlippageBps?: number;
   maxPerRun?: number;
   /** Per owner, per UTC day: how many executes and how much gas the bot fronts through orders. */
   dailyExecutes?: number;
@@ -179,7 +207,13 @@ const eth = (wei: bigint): string => {
   return `${w}${f ? "." + f : ""}`;
 };
 const short = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
-const label = (o: Order): string => (o.kind === "limit" ? "limit buy" : "dca");
+const LABELS: Record<OrderKind, string> = { limit: "limit buy", dca: "dca", tp: "take profit", sl: "stop loss" };
+const label = (o: Order): string => LABELS[o.kind];
+const isSell = (o: Order): boolean => o.kind === "tp" || o.kind === "sl";
+const units = (v: bigint, decimals: number): string => {
+  const base = 10n ** BigInt(decimals), f = (v % base).toString().padStart(decimals, "0").slice(0, 4).replace(/0+$/, "");
+  return `${v / base}${f ? "." + f : ""}`;
+};
 const firstLine = (e: unknown): string => (e instanceof Error ? e.message.split("\n")[0]! : String(e));
 const max = (a: bigint, b: bigint): bigint => (a > b ? a : b);
 
@@ -232,6 +266,7 @@ export class OrderRunner {
   async #fire(o: Order, now: Date, budgets: Map<string, Budget>): Promise<Outcome> {
     const link = await this.#d.links.getLink(o.tgId);
     if (!link || link.account.toLowerCase() !== o.account.toLowerCase() || link.chainId !== o.chainId) return this.#refuse(o, now, "your telegram is no longer linked to the account this order was placed from");
+    if (isSell(o)) return this.#fireSell(o, now, budgets);
     const held = this.#d.holders ? await this.#d.holders(link.owner) : { ok: true as const };
     // Unknown is not "less": the pass is skipped quietly and the next one reads again.
     if (!held.ok) return "unknown" in held ? "skipped" : this.#wait(o, now, "your wallet holds less $CHIT than the beta's line; the order waits until it holds the line again");
@@ -292,14 +327,14 @@ export class OrderRunner {
   async #cutOff(o: Order, now: Date, why: string): Promise<"unknown"> {
     const next: Order = { ...o, lastError: why };
     delete next.firingAt;
-    if (o.kind === "limit") next.status = "failed";
+    if (o.kind !== "dca") next.status = "failed";
     else {
       next.remaining = (o.remaining ?? 1) - 1;
       next.nextAt = new Date(now.getTime() + (o.everyMs ?? 0)).toISOString();
       if (next.remaining <= 0) next.status = "done";
     }
     await this.#d.orders.settle(next);
-    await this.#tell(o.tgId, o.kind === "limit"
+    await this.#tell(o.tgId, o.kind !== "dca"
       ? `${label(o)} on <code>${o.token}</code>: ${esc(why)}. it is not sent again on its own: check the account on the explorer and set the order again if nothing landed.`
       : `${label(o)} on <code>${o.token}</code>: ${esc(why)}. that slot counts as spent so it cannot buy twice; check the account.${next.status === "done" ? " that was the last one." : ` ${next.remaining} left.`}`);
     return "unknown";
@@ -308,12 +343,84 @@ export class OrderRunner {
   /** Not a refusal: the order waits with the reason on it. A DCA moves to its next slot without burning a buy, a limit stays armed; the owner hears the reason once, not every five minutes. */
   async #wait(o: Order, now: Date, why: string): Promise<"waited"> {
     const fresh = o.lastError !== why;
-    if (o.kind === "limit" && !fresh) return "waited";
+    if (o.kind !== "dca" && !fresh) return "waited";
     const next: Order = { ...o, lastError: why };
     if (o.kind === "dca") next.nextAt = new Date(now.getTime() + (o.everyMs ?? 0)).toISOString();
     await this.#d.orders.settle(next);
     if (fresh) await this.#tell(o.tgId, `${label(o)} on <code>${o.token}</code>: ${esc(why)}.`);
     return "waited";
+  }
+
+  /**
+   * A take profit or a stop loss, once its level is reached: the share of what the account holds now, sold as one `sell`
+   * on the account. The checks run cheapest and reversible first, as a tapped Sell's do: the owner's flag, a token the
+   * session can never sell, the position, the level on this fresh read, the quote, the day's budget, the contract's own
+   * answer, then the sale as an eth_call. Only then the claim, and the one transaction.
+   */
+  async #fireSell(o: Order, now: Date, budgets: Map<string, Budget>): Promise<Outcome> {
+    const allowed = await Promise.resolve().then(() => this.#d.session.sellAllowed(o.account)).catch(() => undefined);
+    if (allowed === undefined) return "skipped";
+    if (!allowed) return this.#wait(o, now, "your session does not allow sells; turn on let it sell next to the bot's key on the Sessions page and the order fires at the next check while the price is still there");
+    const [info, held] = await Promise.all([this.#d.reads.tokenInfo(o.token), this.#d.reads.tokenBalance(o.token, o.account)]);
+    if (!info.hasPool) return this.#refuse(o, now, "no quote from the pool right now");
+    // A token that fixes Permit2's allowance at infinity refuses every session sale (2026-10-07, CHOP): no retry can help, so the order is off with the way out.
+    if (await Promise.resolve().then(() => this.#d.session.permit2Fixed?.(o.token, o.account)).catch(() => false)) return this.#off(o, `${esc(info.symbol)} can't be sold through the session (it fixes its Permit2 approval at infinity); withdraw it to your wallet from the Sessions page and sell it there`);
+    const amount = (held * BigInt(o.sellPct ?? 100)) / 100n;
+    if (amount === 0n) return this.#off(o, `your account holds no ${esc(info.symbol)} any more, so there is nothing to sell`);
+    // The level is checked again on this read, not the run's: a price that slipped back is simply not due.
+    if (!atLevel(o, info.perEth)) return "skipped";
+    const quote = await this.#d.reads.quoteSell(o.token, amount);
+    if (quote === null) return this.#refuse(o, now, "no quote from the pool right now");
+    let minOut = minOutFor(quote, this.#d.sellSlippageBps ?? 300);
+    if (o.kind === "tp") {
+      // A take profit fills at its level or better, as a limit buy does: the fee and the depth can put the sale under it, and then it waits.
+      const floor = levelEthOut(o, amount);
+      if (quote < floor) return this.#wait(o, now, `the pool returns less than your level for ${units(amount, info.decimals)} ${esc(info.symbol)} once the fee and the depth are in; the order waits for the price to move`);
+      minOut = max(minOut, floor);
+    }
+    const budget = await this.#budget(o.tgId, now, budgets);
+    if (budget.executes >= (this.#d.dailyExecutes ?? DAILY_DEFAULTS.executes)) return this.#wait(o, now, `that is ${this.#d.dailyExecutes ?? DAILY_DEFAULTS.executes} trades today from this account; the order waits for tomorrow`);
+    if (budget.gasWei >= (this.#d.dailyGasWei ?? DAILY_DEFAULTS.gasWei)) return this.#wait(o, now, "the bot has fronted its daily gas for this account; the order waits for tomorrow");
+    const deadline = BigInt(Math.floor(now.getTime() / 1000) + 3600);
+    const poolKey = info.poolKey ?? venuePoolKey(o.token);
+    // The contract's own answer first: a paused, expired or revoked session, the flag gone, all refused here, before any gas, in its words.
+    const can = await this.#d.session.canSell(o.account, this.#d.reads.router, poolKey, amount, minOut, deadline);
+    if (!can.ok) return this.#refuse(o, now, `your session says no: ${can.why}`);
+    const sale = { router: this.#d.reads.router, token: o.token, amountIn: amount, minOut, deadline, poolKey };
+    // The sale as an eth_call first, so one that would revert costs no gas; a simulation the RPC could not run is no verdict.
+    const sim = await Promise.resolve().then(() => this.#d.session.simulateSell?.(o.account, sale)).catch(() => undefined);
+    if (sim && !sim.ok) return this.#refuse(o, now, `the sale would fail on chain: ${sim.why}`);
+    if (!(await this.#d.orders.claim(o.id, now, o.nextAt))) return "skipped";
+    budget.executes += 1;
+    budget.gasWei += SELL_GAS_CEILING_WEI;
+    const before = this.#d.positions ? await Promise.resolve().then(() => this.#d.reads.ethBalance(o.account)).catch(() => undefined) : undefined;
+    let r: { hash: Hex; landed: boolean; reverted?: boolean };
+    try { r = await this.#d.session.sell(o.account, sale); }
+    catch (e) { return this.#cutOff(o, now, `the send did not answer (${firstLine(e)})`); }
+    await noteSent(this.#d.positions, { hash: r.hash, account: o.account, token: o.token, side: "sell", ethWei: 0n, asked: amount, ethOut: minOut, at: now.toISOString() });
+    if (r.landed && before !== undefined) await noteProceeds(this.#d.positions, r.hash, saleProceeds(before, await Promise.resolve().then(() => this.#d.reads.ethBalance(o.account)).catch(() => before), minOut, quote));
+    // Sent once: the order closes whatever the receipt said, so a level that holds never sells the position a second time.
+    const next: Order = { ...o, refusals: 0, status: "done" };
+    delete next.lastError;
+    delete next.firingAt;
+    const explorer = `https://robinhoodchain.blockscout.com/tx/${r.hash}`;
+    const head = `${label(o)}: <code>${units(amount, info.decimals)} ${esc(info.symbol)}</code> (${o.sellPct ?? 100}%) for about <code>${eth(quote)} ETH</code>, floor <code>${eth(minOut)}</code>`;
+    if (!(await this.#d.orders.settle(next))) {
+      await this.#tell(o.tgId, `${head} went out, <a href="${explorer}">${short(r.hash)}</a>, and the order was cancelled while it was in flight; nothing more is sent.`);
+      return r.landed ? "landed" : "sent";
+    }
+    await this.#tell(o.tgId, r.landed
+      ? `${head} landed, <a href="${explorer}">${short(r.hash)}</a>; the ETH is in your account.`
+      : r.reverted ? `${label(o)} on <b>${esc(info.symbol)}</b> failed on chain: nothing was sold and your tokens are still in your account, <a href="${explorer}">${short(r.hash)}</a>. the order is closed; set it again from the card.`
+      : `${head} sent, <a href="${explorer}">${short(r.hash)}</a>, not confirmed as landed; the floor protects the fill.`);
+    return r.landed ? "landed" : "sent";
+  }
+
+  /** An order no retry can help: closed now with the reason, said once. */
+  async #off(o: Order, why: string): Promise<"refused"> {
+    if (!(await this.#d.orders.settle({ ...o, status: "failed", lastError: why }))) return "refused";
+    await this.#tell(o.tgId, `${label(o)} on <code>${o.token}</code>: ${why}. the order is off.`);
+    return "refused";
   }
 
   async #refuse(o: Order, now: Date, why: string): Promise<"refused"> {
@@ -379,6 +486,8 @@ const SCHEMA = [
   // A table from before orders carried a chain and a claim.
   `ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS chain_id INTEGER NOT NULL DEFAULT 4663`,
   `ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS firing_at TIMESTAMPTZ`,
+  // Take profit and stop loss: the share of the position they sell.
+  `ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS sell_pct INTEGER`,
   `CREATE INDEX IF NOT EXISTS bot_orders_open_chain ON bot_orders (status, chain_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS bot_order_fires (id BIGSERIAL PRIMARY KEY, order_id TEXT NOT NULL, tg_id TEXT NOT NULL, chain_id INTEGER NOT NULL, fired_at TIMESTAMPTZ NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS bot_order_fires_owner ON bot_order_fires (tg_id, chain_id, fired_at)`,
@@ -391,6 +500,7 @@ const rowOrder = (r: Row): Order => ({
   id: String(r.id), tgId: String(r.tg_id), account: String(r.account) as Address, chainId: Number(r.chain_id), token: String(r.token) as Address, kind: String(r.kind) as OrderKind,
   ethWei: BigInt(String(r.eth_wei)),
   ...(r.trigger_per_eth !== null && r.trigger_per_eth !== undefined ? { triggerPerEth: BigInt(String(r.trigger_per_eth)) } : {}),
+  ...(r.sell_pct !== null && r.sell_pct !== undefined ? { sellPct: Number(r.sell_pct) } : {}),
   ...(r.every_ms !== null && r.every_ms !== undefined ? { everyMs: Number(r.every_ms) } : {}),
   ...(r.remaining !== null && r.remaining !== undefined ? { remaining: Number(r.remaining) } : {}),
   ...(r.next_at ? { nextAt: iso(r.next_at) } : {}),
@@ -408,9 +518,9 @@ export class NeonOrderStore implements OrderStore {
   async put(o: Order) {
     await this.#init();
     await this.sql.query(
-      `INSERT INTO bot_orders (id, tg_id, account, chain_id, token, kind, eth_wei, trigger_per_eth, every_ms, remaining, next_at, created_at, status, last_error, refusals) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      `INSERT INTO bot_orders (id, tg_id, account, chain_id, token, kind, eth_wei, trigger_per_eth, every_ms, remaining, next_at, created_at, status, last_error, refusals, sell_pct) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (id) DO UPDATE SET remaining = EXCLUDED.remaining, next_at = EXCLUDED.next_at, status = EXCLUDED.status, last_error = EXCLUDED.last_error, refusals = EXCLUDED.refusals`,
-      [o.id, o.tgId, o.account, o.chainId, o.token, o.kind, o.ethWei.toString(), o.triggerPerEth?.toString() ?? null, o.everyMs ?? null, o.remaining ?? null, o.nextAt ?? null, o.createdAt, o.status, o.lastError ?? null, o.refusals],
+      [o.id, o.tgId, o.account, o.chainId, o.token, o.kind, o.ethWei.toString(), o.triggerPerEth?.toString() ?? null, o.everyMs ?? null, o.remaining ?? null, o.nextAt ?? null, o.createdAt, o.status, o.lastError ?? null, o.refusals, o.sellPct ?? null],
     );
   }
   async get(id: string) { await this.#init(); const [r] = await this.sql.query(`SELECT * FROM bot_orders WHERE id = $1`, [id]); return r ? rowOrder(r) : undefined; }

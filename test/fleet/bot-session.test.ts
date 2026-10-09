@@ -1083,3 +1083,63 @@ test("revertWords: the Permit2 selector in words, the account's own errors by na
   assert.equal(revertWords(nested("0x12345678")), "reverted with 0x12345678");
   assert.equal(revertWords(new Error("fetch failed\nat somewhere")), "fetch failed", "no data: the message's first line");
 });
+
+test("orders: a take profit and a stop loss are offered over a position only; the reply is a move from the price now and a share, stored as the level in tokens per eth once the account agrees to the sale", async () => {
+  const { MemoryOrderStore } = await import("../../src/fleet/bot-orders.js");
+  const orders = new MemoryOrderStore();
+  const { bot, telegram, buttons, links, session } = setup({ orders });
+  await linked(links);
+  await bot.handle(dm(PEPE));
+  assert.ok(buttons().includes(`tp:${PEPE}`) && buttons().includes(`sl:${PEPE}`));
+  // No position, no exit to set; the buy-side orders stay.
+  const flat = setup({ orders: new MemoryOrderStore(), reads: { ...reads, async tokenBalance() { return 0n; } } as unknown as BotChain });
+  await linked(flat.links);
+  await flat.bot.handle(dm(PEPE));
+  assert.ok(!flat.buttons().some((b) => b.startsWith("tp:") || b.startsWith("sl:")));
+  assert.ok(flat.buttons().includes(`lim:${PEPE}`));
+  // The prompt, a sign on the wrong side refused with the way back.
+  await bot.handle(tap(`tp:${PEPE}`));
+  assert.match(telegram.last(), /like <code>\+50% sell 100%<\/code>/);
+  await bot.handle(dm("-50% sell 100%", "take profit"));
+  assert.match(telegram.last(), /not the format\. how far up, then the share to sell.*tap \u{1F3AF} Take profit again to retry\./u);
+  assert.ok(buttons().includes(`tp:${PEPE}`));
+  // let it sell off: refused before anything is stored, with the Sessions page.
+  await bot.handle(tap(`tp:${PEPE}`));
+  await bot.handle(dm("+50% sell 100%", "take profit"));
+  assert.match(telegram.last(), /a take profit sells from your account, and your session does not allow sells yet.*turn on let it sell/);
+  assert.equal((await orders.openFor("7", 4663)).length, 0);
+  session.allowSell(true);
+  await bot.handle(tap(`tp:${PEPE}`));
+  await bot.handle(dm("+50% sell 100%", "take profit"));
+  let open = await orders.openFor("7", 4663);
+  assert.equal(open.length, 1);
+  assert.equal(open[0]!.kind, "tp");
+  assert.equal(open[0]!.ethWei, 0n);
+  assert.equal(open[0]!.sellPct, 100);
+  assert.equal(open[0]!.triggerPerEth, (1_000_000_000_000n * 10_000n) / 15_000n, "price up 50% is a third fewer tokens per eth");
+  assert.match(telegram.last(), /🎯 take profit: sell <code>100%<\/code> of your <b>PEPE<\/b> once one ETH buys <code>666666.66 PEPE<\/code> or fewer \(\+50% from now\)\nset\./);
+  // A stop loss: the share without its percent sign, the move with a decimal.
+  await bot.handle(tap(`sl:${PEPE}`));
+  assert.match(telegram.last(), /like <code>-20% sell 100%<\/code>/);
+  await bot.handle(dm("-96% sell 100%", "stop loss"));
+  assert.match(telegram.last(), /the move down must be between 1% and 95%\. tap \u{1F6D1} Stop loss again to retry\./u);
+  await bot.handle(tap(`sl:${PEPE}`));
+  await bot.handle(dm("-20% sell 0%", "stop loss"));
+  assert.match(telegram.last(), /the share must be a whole percent of what you hold, 1 to 100/);
+  await bot.handle(tap(`sl:${PEPE}`));
+  await bot.handle(dm("-12.5% 50", "stop loss"));
+  open = await orders.openFor("7", 4663);
+  const sl = open.find((o) => o.kind === "sl")!;
+  assert.equal(sl.sellPct, 50);
+  assert.equal(sl.triggerPerEth, (1_000_000_000_000n * 10_000n) / 8_750n);
+  // The contract's answer for the sale is asked first: a paused session stores nothing.
+  session.refuseWith("session paused");
+  await bot.handle(tap(`sl:${PEPE}`));
+  await bot.handle(dm("-20% sell 100%", "stop loss"));
+  assert.match(telegram.last(), /your session says no to a sale of that share: <b>session paused<\/b>/);
+  assert.equal((await orders.openFor("7", 4663)).length, 2);
+  assert.equal(session.sales.length, 0, "placing an exit sells nothing");
+  await bot.handle(tap("orders"));
+  assert.match(telegram.last(), /1\. 🎯 take profit: sell <code>100%<\/code>.*\n2\. 🛑 stop loss: sell <code>50%<\/code> of your <b>PEPE<\/b> once one ETH buys <code>1142857.14 PEPE<\/code> or more/);
+  assert.match(telegram.last(), /sells only while let it sell is on/);
+});

@@ -173,7 +173,17 @@ quote sets the floor (for a limit, the level itself when that is higher, so
 a fill never lands under the price you named; a pool too thin to give it
 waits), the bot's key signs, the account pays. A refusal (a paused session,
 over a cap) leaves the order open with the reason on it and tells you;
-three in a row switch it off. **Orders** on the home card lists what is
+three in a row switch it off. Over a position the card adds **Take
+profit** and **Stop loss**: a move from the price now and a share of what
+you hold (`+50% sell 100%`, `-20% sell 50%`), stored as the level in tokens
+per ETH. When the pool reaches it, the share of what the account holds then
+is sold as the one `sell` a tapped Sell is, only while let it sell is on
+(off, the order waits and says so once). A take profit fills at its level
+or better, the level being its floor; a stop loss is a way out, floored at
+the sell slippage only. Neither asks the $CHIT holders line, each fires
+once and closes, and a token the session can never sell (Permit2 fixed at
+infinity) or a position already gone turns the order off with the reason.
+**Orders** on the home card lists what is
 open, a cancel under each; a cancel is one statement in the store and a run
 mid-send cannot write over it. Money moves at most once per slot: the run
 claims an order before the send, the claim names the DCA slot it is for (so

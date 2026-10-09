@@ -509,3 +509,171 @@ test("an order the account cannot pay for waits with what it holds, and nothing 
   assert.equal(session.calls.length, 0);
   assert.match((await orders.get("l"))!.lastError ?? "", /your account holds .* ETH and this order buys 0\.01; it waits until the account is funded/);
 });
+
+// ---------- take profit and stop loss ----------
+
+const sellReads = (p: { perEth: bigint | (() => bigint); held?: bigint; quoteOf?: (tokensIn: bigint, perEth: bigint) => bigint | null }) => {
+  const now = () => (typeof p.perEth === "function" ? p.perEth() : p.perEth);
+  return {
+    chainId: 4663, router: ROUTER,
+    async tokenInfo(token: Address) { return { address: token, symbol: "PEPE", decimals: 6, hasPool: true, perEth: now(), poolEth: parseEther("5"), hooked: false, fee: 3000 }; },
+    async tokenBalance() { return p.held ?? 1_000_000n; },
+    async ethBalance() { return parseEther("0.4"); },
+    async quoteBuy() { return null; },
+    async quoteSell(_t: Address, tokensIn: bigint) { const perEth = now(); return p.quoteOf ? p.quoteOf(tokensIn, perEth) : (tokensIn * 10n ** 18n) / perEth; },
+  } as unknown as BotChain;
+};
+
+const sellSession = () => {
+  const sales: { account: Address; amountIn: bigint; minOut: bigint }[] = [];
+  let allowed = true, fixed = false, sim: { ok: boolean; why: string } | "throws" | undefined;
+  const s: SessionChain = {
+    chainId: 4663, signer: "0x00000000000000000000000000000000000000b0",
+    async ownerOf() { return OWNER; },
+    async sessionOf() { throw new Error("not read here"); },
+    async canExecute() { throw new Error("a sell order never asks to execute"); },
+    async execute() { throw new Error("a sell order never executes a buy"); },
+    async signerBalance() { return parseEther("1"); },
+    async sellAllowed() { return allowed; },
+    async canSell() { return allowed ? { ok: true, why: "" } : { ok: false, why: "sell not allowed" }; },
+    async sell(account, sale) { sales.push({ account, amountIn: sale.amountIn, minOut: sale.minOut }); return { hash: ("0x" + "cd".repeat(32)) as Hex, landed: true }; },
+    async permit2Fixed() { return fixed; },
+    async simulateSell() { if (sim === "throws") throw new Error("rpc 429"); return sim ?? { ok: true, why: "" }; },
+  };
+  return { s, sales, allow: (v: boolean) => { allowed = v; }, fixPermit2: (v: boolean) => { fixed = v; }, simulate: (v: typeof sim) => { sim = v; } };
+};
+
+const exitSetup = (r: BotChain, extra: { holders?: unknown; positions?: MemoryPositionLedger } = {}) => {
+  const orders = new MemoryOrderStore();
+  const links = new MemoryBotLinkStore();
+  const session = sellSession();
+  const telegram = new RecordingTelegram();
+  const runner = new OrderRunner({ orders, links, reads: r, session: session.s, telegram, now: () => clock, ...(extra as object) });
+  return { orders, links, session, telegram, runner };
+};
+const exit = (p: Partial<Order> & { id: string; kind: "tp" | "sl" }): Order => order({ ethWei: 0n, sellPct: 100, ...p });
+
+test("due: a take profit fires when one eth buys at most its level (the price rose to it), a stop loss when it buys at least its level (the price fell to it)", () => {
+  const tp = exit({ id: "tp", kind: "tp", triggerPerEth: 800_000n });
+  const sl = exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n });
+  const all = [tp, sl];
+  assert.deepEqual(due(all, clock, () => 1_000_000n).map((o) => o.id), [], "between the levels: nothing");
+  assert.deepEqual(due(all, clock, () => 800_000n).map((o) => o.id), ["tp"], "at the take profit's level");
+  assert.deepEqual(due(all, clock, () => 700_000n).map((o) => o.id), ["tp"], "past it");
+  assert.deepEqual(due(all, clock, () => 800_001n).map((o) => o.id), [], "one unit short");
+  assert.deepEqual(due(all, clock, () => 1_250_000n).map((o) => o.id), ["sl"], "at the stop's level");
+  assert.deepEqual(due(all, clock, () => 2_000_000n).map((o) => o.id), ["sl"], "past it");
+  assert.deepEqual(due(all, clock, () => undefined).map((o) => o.id), [], "no price, no exit");
+  assert.deepEqual(due([{ ...tp, firingAt: clock.toISOString() }], clock, () => 1n), [], "a held order is not due again");
+});
+
+test("a take profit fires once at its level: one sale of its share on the account, floored at the level or the slippage, then done; the next run sends nothing; the $CHIT line is never asked", async () => {
+  const positions = new MemoryPositionLedger();
+  const { orders, links, session, telegram, runner } = exitSetup(sellReads({ perEth: 700_000n }), { holders: async () => ({ ok: false, holds: 0n, need: 1n }), positions });
+  await linked(links);
+  await orders.put(exit({ id: "tp", kind: "tp", triggerPerEth: 800_000n, sellPct: 50 }));
+  assert.deepEqual(await runner.run(), { ...none, fired: 1, landed: 1 });
+  assert.equal(session.sales.length, 1);
+  assert.equal(session.sales[0]!.account, ACCOUNT);
+  assert.equal(session.sales[0]!.amountIn, 500_000n, "half of what the account holds");
+  const quote = (500_000n * 10n ** 18n) / 700_000n;
+  const level = (500_000n * 10n ** 18n) / 800_000n;
+  const slip = minOutFor(quote, 300);
+  assert.equal(session.sales[0]!.minOut, slip > level ? slip : level);
+  assert.equal((await orders.get("tp"))!.status, "done");
+  assert.match(telegram.last(), /^take profit: <code>0\.5 PEPE<\/code> \(50%\) for about <code>0\.71428 ETH<\/code>.* landed, <a href="https:\/\/robinhoodchain\.blockscout\.com\/tx\/0xcdcd/);
+  assert.deepEqual((await positions.forAccount(ACCOUNT)).map((t) => t.side), ["sell"], "the sale goes into Positions");
+  assert.deepEqual(await runner.run(), none, "closed: nothing is due again");
+  assert.equal(session.sales.length, 1);
+});
+
+test("a take profit under its level once the fee and the depth are in waits, armed, said once; a stop loss sells at the slippage floor, the level is not its floor", async () => {
+  // The spot price is past the level, but the sale's quote is 2% under spot: under the take profit's level, over the stop's.
+  const r = sellReads({ perEth: 790_000n, quoteOf: (t, perEth) => ((t * 10n ** 18n) / perEth) * 98n / 100n });
+  const { orders, links, session, telegram, runner } = exitSetup(r);
+  await linked(links);
+  await orders.put(exit({ id: "tp", kind: "tp", triggerPerEth: 800_000n }));
+  assert.deepEqual(await runner.run(), { ...none, waited: 1 });
+  assert.equal(session.sales.length, 0);
+  assert.equal((await orders.get("tp"))!.status, "open");
+  assert.match((await orders.get("tp"))!.lastError ?? "", /the pool returns less than your level/);
+  const said = telegram.sent.length;
+  await runner.run();
+  assert.equal(telegram.sent.length, said, "the same reason is not said every five minutes");
+  const stop = exitSetup(sellReads({ perEth: 1_300_000n, quoteOf: (t, perEth) => ((t * 10n ** 18n) / perEth) * 98n / 100n }));
+  await linked(stop.links);
+  await stop.orders.put(exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n }));
+  assert.deepEqual(await stop.runner.run(), { ...none, fired: 1, landed: 1 });
+  assert.equal(stop.session.sales[0]!.minOut, minOutFor(((1_000_000n * 10n ** 18n) / 1_300_000n) * 98n / 100n, 300));
+  assert.equal((await stop.orders.get("sl"))!.status, "done");
+});
+
+test("an exit with let it sell off waits armed and says so once; a token the session can never sell, or no position left, turns it off with the reason", async () => {
+  const { orders, links, session, telegram, runner } = exitSetup(sellReads({ perEth: 1_300_000n }));
+  await linked(links);
+  await orders.put(exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n }));
+  session.allow(false);
+  assert.deepEqual(await runner.run(), { ...none, waited: 1 });
+  assert.match(telegram.last(), /stop loss on .*your session does not allow sells; turn on let it sell/);
+  await runner.run();
+  assert.equal(telegram.sent.length, 1, "said once");
+  session.allow(true);
+  assert.deepEqual(await runner.run(), { ...none, fired: 1, landed: 1 }, "fires once the flag is on");
+
+  const fixed = exitSetup(sellReads({ perEth: 1_300_000n }));
+  await linked(fixed.links);
+  fixed.session.fixPermit2(true);
+  await fixed.orders.put(exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n }));
+  await fixed.runner.run();
+  assert.equal(fixed.session.sales.length, 0);
+  assert.equal((await fixed.orders.get("sl"))!.status, "failed");
+  assert.match(fixed.telegram.last(), /PEPE can't be sold through the session .*withdraw it to your wallet .*the order is off\./);
+
+  const empty = exitSetup(sellReads({ perEth: 1_300_000n, held: 0n }));
+  await linked(empty.links);
+  await empty.orders.put(exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n }));
+  await empty.runner.run();
+  assert.equal(empty.session.sales.length, 0);
+  assert.equal((await empty.orders.get("sl"))!.status, "failed");
+  assert.match(empty.telegram.last(), /holds no PEPE any more.*the order is off\./);
+});
+
+test("an exit re-reads the level before it sells: a price back over the line skips quietly; a simulated revert is refused without a send, a simulation the RPC could not run is no verdict", async () => {
+  let reads = 0;
+  // The run's price read says due, the fire's fresh read says the price went back.
+  const back = exitSetup(sellReads({ perEth: () => (reads++ === 0 ? 1_300_000n : 1_200_000n) }));
+  await linked(back.links);
+  await back.orders.put(exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n }));
+  assert.deepEqual(await back.runner.run(), none);
+  assert.equal(back.session.sales.length, 0);
+  assert.equal(back.telegram.sent.length, 0);
+  assert.equal((await back.orders.get("sl"))!.status, "open");
+
+  const { orders, links, session, telegram, runner } = exitSetup(sellReads({ perEth: 1_300_000n }));
+  await linked(links);
+  await orders.put(exit({ id: "sl", kind: "sl", triggerPerEth: 1_250_000n }));
+  session.simulate({ ok: false, why: "TRANSFER_FROM_FAILED" });
+  assert.deepEqual(await runner.run(), { ...none, fired: 1, refused: 1 });
+  assert.equal(session.sales.length, 0, "nothing sent, no gas");
+  assert.equal((await orders.get("sl"))!.refusals, 1);
+  assert.match(telegram.last(), /the sale would fail on chain: TRANSFER_FROM_FAILED\. the order stays on/);
+  session.simulate("throws");
+  assert.deepEqual(await runner.run(), { ...none, fired: 1, landed: 1 });
+  assert.equal(session.sales.length, 1);
+});
+
+test("neon: an exit's share goes in and comes back", async () => {
+  const sql = fakeSql((query) => query.includes("INSERT INTO bot_orders") ? [] : query.includes("SELECT * FROM bot_orders WHERE id")
+    ? [{ id: "tp", tg_id: "7", account: ACCOUNT, chain_id: 4663, token: PEPE, kind: "tp", eth_wei: "0", trigger_per_eth: "800000", sell_pct: 50, every_ms: null, remaining: null, next_at: null, created_at: clock.toISOString(), status: "open", last_error: null, refusals: 0, firing_at: null }]
+    : undefined);
+  const store = new NeonOrderStore(sql);
+  await store.put(exit({ id: "tp", kind: "tp", triggerPerEth: 800_000n, sellPct: 50 }));
+  const put = sql.calls.find((c) => c.query.includes("INSERT INTO bot_orders"))!;
+  assert.match(put.query, /refusals, sell_pct\) VALUES/);
+  assert.equal(put.params[15], 50);
+  const o = (await store.get("tp"))!;
+  assert.equal(o.kind, "tp");
+  assert.equal(o.sellPct, 50);
+  assert.equal(o.triggerPerEth, 800_000n);
+  assert.ok(sql.calls.some((c) => c.query.includes("ADD COLUMN IF NOT EXISTS sell_pct")), "a table from before takes the column");
+});
