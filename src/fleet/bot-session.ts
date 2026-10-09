@@ -140,6 +140,7 @@ export const MIRRORS_UNTIL_MS = 50_000;
 const BUSY = "still working on your last trade. wait for its answer.";
 /** How long Positions waits for ETH's dollar price before showing ETH alone. */
 const USD_WAIT_MS = 3_000;
+const USD_PEEK_MS = 300;
 const short = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const fmt = (units: bigint, decimals = 18, places = 5): string => {
   const neg = units < 0n; const u = neg ? -units : units;
@@ -362,14 +363,15 @@ export class SessionBot {
     this.#typing(chatId);
     const [s, ethBal] = await Promise.all([this.#d.session.sessionOf(link.account), this.#d.reads.ethBalance(link.account)]);
     const state = sessionState(s, Math.floor(this.#now.getTime() / 1000));
+    // docs/bot-voice.md: sentence case; a label, a value, one line each, the way the trading bots people already use lay their home out.
     const lines = [
       this.#mode(),
-      `linked to <code>${link.account}</code> <i>(your session account; owner ${short(link.owner)})</i>`,
-      `account holds: <code>${eth(ethBal)} ETH</code>`,
+      `<b>Account</b> <code>${link.account}</code> · owner <code>${short(link.owner)}</code>`,
+      `<b>Balance</b> <code>${eth(ethBal)} ETH</code>`,
       this.#sessionLine(state, s),
       "",
-      state === "active" ? "paste any token's contract address to see its card and buy from your account." : `manage the session on the <a href="${this.#d.siteUrl}/app/sessions">Sessions page</a>: fund, grant, pause, resume, revoke, withdraw. only you can.`,
-      "<i>beta. holders only. not audited by a firm yet.</i>",
+      state === "active" ? "Paste a token's contract address to see its card and buy from your account." : `Manage the session on the <a href="${this.#d.siteUrl}/app/sessions">Sessions page</a>: fund, grant, pause, resume, revoke, withdraw. Only you can.`,
+      "<i>Beta · holders only · not audited by a firm yet</i>",
     ];
     // What a trader taps most comes first and two to a row; the account's own pages sit under them. Twelve buttons in six rows, not nine.
     const trading = [...(this.#d.positions ? [btn("📊 Positions", "pos")] : []), ...(this.#d.orders ? [btn("📋 Orders", "orders")] : [])];
@@ -420,8 +422,10 @@ export class SessionBot {
   async #positionsCard(chatId: string, account: Address, messageId: number | undefined, unit: "eth" | "usd"): Promise<void> {
     // The chain scan's clock starts now, alongside the price's, so the two waits overlap instead of adding up (seen live 2026-10-09: 5-9 s in series).
     const held = this.#heldTokens(account);
-    // The price is waited for briefly; without it the card shows ETH and the next tap offers dollars.
-    const usdPerEth = this.#d.usdPerEth ? await Promise.race([this.#d.usdPerEth().catch(() => undefined), new Promise<undefined>((r) => setTimeout(() => r(undefined), USD_WAIT_MS))]) : undefined;
+    // The ETH card waits for the price only as long as a cached one takes (USD_PEEK_MS); a dollars tap waits for a read (USD_WAIT_MS). A read that
+    // runs over keeps going and is cached, so the next tap has it: the first card of a cold instance offers ETH, the second offers dollars too.
+    const priceWait = unit === "usd" ? USD_WAIT_MS : USD_PEEK_MS;
+    const usdPerEth = this.#d.usdPerEth ? await Promise.race([this.#d.usdPerEth().catch(() => undefined), new Promise<undefined>((r) => setTimeout(() => r(undefined), priceWait))]) : undefined;
     const view = unit === "usd" && usdPerEth !== undefined ? { unit: "usd" as const, usdPerEth } : { unit: "eth" as const };
     const settle = this.#d.session.settle?.bind(this.#d.session);
     const card = await positionsCard({ ledger: this.#d.positions!, ...(settle ? { settle } : {}), heldTokens: () => held, reads: this.#d.reads }, account, view);
@@ -447,12 +451,12 @@ export class SessionBot {
 
   #sessionLine(state: ReturnType<typeof sessionState>, s: { maxValuePerCall: string; totalValueCap: string; spentValue: string; expiry: number }): string {
     switch (state) {
-      case "active": return `session <b>active</b>: <code>${eth(BigInt(s.maxValuePerCall), 4)} ETH</code> a trade, <code>${eth(BigInt(s.totalValueCap), 4)} ETH</code> in all (<code>${eth(BigInt(s.spentValue), 4)}</code> spent), until ${new Date(s.expiry * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-      case "none": return "no session granted to the bot's key yet: grant one on the Sessions page.";
-      case "paused": return "session <b>paused</b> by you. resume it on the Sessions page to buy again.";
-      case "revoked": return "session <b>revoked</b>. grant a new key on the Sessions page to let the bot back in.";
-      case "expired": return "session <b>expired</b>. grant a new one on the Sessions page.";
-      case "spent": return "session <b>spent</b>: its total cap is used up. grant a new one on the Sessions page.";
+      case "active": return `<b>Session</b> active · <code>${eth(BigInt(s.maxValuePerCall), 4)} ETH</code> a trade · <code>${eth(BigInt(s.totalValueCap), 4)} ETH</code> in all · <code>${eth(BigInt(s.spentValue), 4)}</code> spent · until ${new Date(s.expiry * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+      case "none": return "<b>Session</b> none yet. Grant one to the bot's key on the Sessions page.";
+      case "paused": return "<b>Session</b> paused by you. Resume it on the Sessions page to buy again.";
+      case "revoked": return "<b>Session</b> revoked. Grant a new key on the Sessions page to let the bot back in.";
+      case "expired": return "<b>Session</b> expired. Grant a new one on the Sessions page.";
+      case "spent": return "<b>Session</b> spent: its total cap is used up. Grant a new one on the Sessions page.";
     }
   }
 
