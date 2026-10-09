@@ -198,6 +198,16 @@ one owner cannot drain the signer's gas. Orders carry the chain they were
 placed on; `BOT_ORDERS_OFF=1` stops the cron with the buttons.
 `src/fleet/bot-orders.ts`.
 
+The same cron watches each linked session's end. A session for the bot's
+key that ends within three days gets one message, and one that has ended
+gets one more, each with **🔑 Renew**. A session can't be extended (the
+account never grants a key twice and has no way to move an expiry), so
+Renew is the bot's own Connect: a fresh link at the moment it is tapped,
+the Sessions page opening with the key and the caps filled in for a new
+account on the same wallet. Each message goes once per stage per expiry
+(`bot_expiry_notes`); a session revoked, never granted, or lapsed more than
+a week ago says nothing. `src/fleet/bot-expiry.ts`.
+
 Leaders ride on the same session too, two ways. **⭐ Become a leader → from
 my session account** opens your tapped buys to followers: when one lands,
 the same token is bought on each follower's own session account, sized to
