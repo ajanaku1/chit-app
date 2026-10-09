@@ -372,7 +372,7 @@ export class ChitBot {
     const tgId = String(q.from.id);
     const data = q.data ?? "";
     if (q.message?.photo && messageId !== undefined) this.#bannerMessages.add(`${chatId}:${messageId}`);
-    const ack = (text?: string): Promise<void> => this.#d.telegram.deliver({ kind: "answer", callbackId: q.id, ...(text ? { text } : {}) });
+    const ack = (text?: string): Promise<void> => this.#d.telegram.deliver({ kind: "answer", callbackId: q.id, ...(text ? { text } : {}) }).then(() => undefined);
     if (q.message?.chat.type !== "private") { await ack("open the bot in private"); return; }
 
     const [verb = "", a = "", b = ""] = data.split(":");

@@ -129,7 +129,7 @@ export class CopyCards {
   owns(verb: string): boolean { return VERBS.has(verb); }
 
   #say(chatId: string, text: string, keyboard?: Keyboard, ask?: string): Promise<void> {
-    return this.#d.telegram.deliver({ kind: "send", chatId, text, ...(keyboard ? { keyboard } : {}), ...(ask ? { ask } : {}) });
+    return this.#d.telegram.deliver({ kind: "send", chatId, text, ...(keyboard ? { keyboard } : {}), ...(ask ? { ask } : {}) }).then(() => undefined);
   }
 
   /** The rows the linked home card adds: the list, my follows, and the leader switch as it stands for this user. */

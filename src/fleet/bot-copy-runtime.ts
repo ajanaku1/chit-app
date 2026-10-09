@@ -116,7 +116,7 @@ export const createCopyDesk = (p: CopyDeskParts): CopyDesk => {
     ...(p.dailyExecutes !== undefined ? { dailyExecutes: p.dailyExecutes } : {}),
     ...(p.dailyGasWei !== undefined ? { dailyGasWei: p.dailyGasWei } : {}),
     botUsername: p.botUsername,
-    tell: (followerTgId, text) => p.telegram.deliver({ kind: "send", chatId: followerTgId, text }),
-    ...(groupChatId ? { feed: { chatId: groupChatId, post: (text, keyboard) => p.telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }) } } : {}),
+    tell: (followerTgId, text) => p.telegram.deliver({ kind: "send", chatId: followerTgId, text }).then(() => undefined),
+    ...(groupChatId ? { feed: { chatId: groupChatId, post: (text, keyboard) => p.telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }).then(() => undefined) } } : {}),
   });
 };

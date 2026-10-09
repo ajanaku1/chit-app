@@ -29,7 +29,8 @@ export type Outgoing =
   | { kind: "typing"; chatId: string };
 
 export interface Telegram {
-  deliver(out: Outgoing): Promise<void>;
+  /** What Telegram gave back: the message's id for a send, so a later edit can land on it; nothing for the rest, or from a fake. */
+  deliver(out: Outgoing): Promise<Delivered | void>;
 }
 
 export const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -39,37 +40,40 @@ export const CALLBACK_DATA_MAX_BYTES = 64;
 export const PLACEHOLDER_MAX_CHARS = 64;
 export const CAPTION_MAX_CHARS = 1024;
 
+export type Delivered = { messageId?: number };
+
 const isUrl = (photo: string | Uint8Array): photo is string => typeof photo === "string" && /^https?:\/\//.test(photo);
 
 export const createTelegram = (token: string): Telegram => {
-  const done = async (method: string, r: Response): Promise<void> => {
-    const body = (await r.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+  const done = async (method: string, r: Response): Promise<Delivered> => {
+    const body = (await r.json().catch(() => ({}))) as { ok?: boolean; description?: string; result?: { message_id?: number } };
     // An edit that changes nothing is Telegram's "message is not modified", which is fine.
     if (!body.ok && !/not modified/.test(body.description ?? "")) console.error(`telegram ${method}: ${body.description ?? r.status}`);
+    return typeof body.result?.message_id === "number" ? { messageId: body.result.message_id } : {};
   };
-  const call = async (method: string, payload: Record<string, unknown>): Promise<void> => {
+  const call = async (method: string, payload: Record<string, unknown>): Promise<Delivered> => {
     const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await done(method, r);
+    return done(method, r);
   };
   /** The same call with a file, from disk or already in hand: every field as a form part, the file under `fileField`. */
-  const upload = async (method: string, fields: Record<string, unknown>, fileField: string, file: string | Uint8Array): Promise<void> => {
+  const upload = async (method: string, fields: Record<string, unknown>, fileField: string, file: string | Uint8Array): Promise<Delivered> => {
     const form = new FormData();
     for (const [k, v] of Object.entries(fields)) form.set(k, typeof v === "string" ? v : JSON.stringify(v));
     const bytes = typeof file === "string" ? await readFile(file) : file;
     form.set(fileField, new Blob([bytes], { type: "image/png" }), typeof file === "string" ? path.basename(file) : "card.png");
     const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: "POST", body: form });
-    await done(method, r);
+    return done(method, r);
   };
   const markup = (keyboard?: Keyboard) => (keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {});
   return {
     async deliver(out) {
       if (out.kind === "send") {
         const replyMarkup = out.ask ? { force_reply: true, input_field_placeholder: out.ask, selective: true } : out.keyboard ? { inline_keyboard: out.keyboard } : undefined;
-        await call("sendMessage", { chat_id: out.chatId, text: out.text, parse_mode: "HTML", disable_web_page_preview: true, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
+        return call("sendMessage", { chat_id: out.chatId, text: out.text, parse_mode: "HTML", disable_web_page_preview: true, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
       } else if (out.kind === "edit") {
         await call("editMessageText", { chat_id: out.chatId, message_id: out.messageId, text: out.text, parse_mode: "HTML", disable_web_page_preview: true, ...markup(out.keyboard) });
       } else if (out.kind === "photo") {
@@ -95,7 +99,7 @@ export class RecordingTelegram implements Telegram {
   readonly sent: Outgoing[] = [];
   /** The chats shown "typing…", in order; a signal, not a message, so it is not in `sent`. */
   readonly typing: string[] = [];
-  async deliver(out: Outgoing): Promise<void> {
+  async deliver(out: Outgoing): Promise<Delivered | void> {
     if (out.kind === "typing") { this.typing.push(out.chatId); return; }
     if (out.kind !== "answer" && out.keyboard) {
       for (const b of out.keyboard.flat()) {
@@ -105,6 +109,8 @@ export class RecordingTelegram implements Telegram {
     if (out.kind === "send" && out.ask && out.ask.length > PLACEHOLDER_MAX_CHARS) throw new Error(`placeholder over ${PLACEHOLDER_MAX_CHARS} characters: ${out.ask}`);
     if ((out.kind === "photo" || out.kind === "editPhoto") && out.text.length > CAPTION_MAX_CHARS) throw new Error(`caption over ${CAPTION_MAX_CHARS} characters`);
     this.sent.push(out);
+    // A sent message's id is its place in the record, so a later edit on it is told apart in the assertions.
+    if (out.kind === "send" || out.kind === "photo") return { messageId: this.sent.length };
   }
   texts(): string[] {
     return this.sent.filter((o): o is Exclude<Outgoing, { kind: "answer" } | { kind: "typing" }> => o.kind !== "answer" && o.kind !== "typing").map((o) => o.text);
