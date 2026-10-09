@@ -131,7 +131,7 @@ const setup = (shared?: { store?: BotWalletStore; chain?: ReturnType<typeof fake
   const bot = new ChitBot({ store, chain, telegram, keySecret: SECRET, botUsername: "chit_playground_bot", now: () => clock, ...(shared?.share ? { share: shared.share } : {}) });
   /** The last message's keyboard, flattened to callback data. */
   const buttons = (): string[] => {
-    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: Keyboard } | undefined;
+    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: Keyboard } | undefined;
     return (last?.keyboard ?? []).flat().map((b) => ("callback_data" in b ? b.callback_data : b.url));
   };
   /** The last prompt's text, when the bot opened the reply field. */
@@ -611,7 +611,7 @@ test("the fleet from the chat: deposit, create and activate in one tap, buy from
   const fleetApi = fakeFleetApi(() => walletAddr);
   const bot = new ChitBot({ store, chain, telegram, fleetApi, keySecret: SECRET, botUsername: "chit_playground_bot", now: () => clock });
   const buttons = (): string[] => {
-    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: Keyboard } | undefined;
+    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: Keyboard } | undefined;
     return (last?.keyboard ?? []).flat().map((b) => ("callback_data" in b ? b.callback_data : b.url));
   };
   await bot.handle(dm("/start"));
@@ -707,7 +707,7 @@ test("a fleet created but not activated offers activate and start over; an ended
   const fleetApi = fakeFleetApi(() => walletAddr);
   const bot = new ChitBot({ store, chain, telegram, fleetApi, keySecret: SECRET, botUsername: "b", now: () => clock });
   const buttons = (): string[] => {
-    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: Keyboard } | undefined;
+    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: Keyboard } | undefined;
     return (last?.keyboard ?? []).flat().map((b) => ("callback_data" in b ? b.callback_data : b.url));
   };
   await bot.handle(dm("/start"));

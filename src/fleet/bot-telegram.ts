@@ -24,7 +24,9 @@ export type Outgoing =
   | { kind: "photo"; chatId: string; photo: string | Uint8Array; text: string; keyboard?: Keyboard }
   /** The same, in place of an earlier banner card: the photo and the caption change together. */
   | { kind: "editPhoto"; chatId: string; messageId: number; photo: string | Uint8Array; text: string; keyboard?: Keyboard }
-  | { kind: "answer"; callbackId: string; text?: string };
+  | { kind: "answer"; callbackId: string; text?: string }
+  /** Telegram's "typing…" line under the bot's name, five seconds or until the next message: what a tap gets while its reads run. */
+  | { kind: "typing"; chatId: string };
 
 export interface Telegram {
   deliver(out: Outgoing): Promise<void>;
@@ -79,6 +81,8 @@ export const createTelegram = (token: string): Telegram => {
         const fields = { chat_id: out.chatId, message_id: out.messageId, ...markup(out.keyboard) };
         if (isUrl(out.photo)) await call("editMessageMedia", { ...fields, media: { ...media, media: out.photo } });
         else await upload("editMessageMedia", { ...fields, media: { ...media, media: "attach://banner" } }, "banner", out.photo);
+      } else if (out.kind === "typing") {
+        await call("sendChatAction", { chat_id: out.chatId, action: "typing" });
       } else {
         await call("answerCallbackQuery", { callback_query_id: out.callbackId, ...(out.text ? { text: out.text } : {}) });
       }
@@ -89,7 +93,10 @@ export const createTelegram = (token: string): Telegram => {
 /** A recorder for tests: every outgoing message, in order, refusing what Telegram would refuse. */
 export class RecordingTelegram implements Telegram {
   readonly sent: Outgoing[] = [];
+  /** The chats shown "typing…", in order; a signal, not a message, so it is not in `sent`. */
+  readonly typing: string[] = [];
   async deliver(out: Outgoing): Promise<void> {
+    if (out.kind === "typing") { this.typing.push(out.chatId); return; }
     if (out.kind !== "answer" && out.keyboard) {
       for (const b of out.keyboard.flat()) {
         if ("callback_data" in b && Buffer.byteLength(b.callback_data, "utf8") > CALLBACK_DATA_MAX_BYTES) throw new Error(`callback_data over ${CALLBACK_DATA_MAX_BYTES} bytes: ${b.callback_data}`);
@@ -100,7 +107,7 @@ export class RecordingTelegram implements Telegram {
     this.sent.push(out);
   }
   texts(): string[] {
-    return this.sent.filter((o): o is Exclude<Outgoing, { kind: "answer" }> => o.kind !== "answer").map((o) => o.text);
+    return this.sent.filter((o): o is Exclude<Outgoing, { kind: "answer" } | { kind: "typing" }> => o.kind !== "answer" && o.kind !== "typing").map((o) => o.text);
   }
   last(): string {
     return this.texts().at(-1) ?? "";
