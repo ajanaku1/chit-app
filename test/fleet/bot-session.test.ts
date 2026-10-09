@@ -226,7 +226,7 @@ const withCopy = (opts: Partial<Deps> = {}, feed: { post?: (text: string) => Pro
     ...(deskHolders ? { holders: deskHolders } : {}),
     // The daily limits are the bot's, as the runtime hands the same env to both.
     ...(opts.dailyExecutes !== undefined ? { dailyExecutes: opts.dailyExecutes } : {}), ...(opts.dailyGasWei !== undefined ? { dailyGasWei: opts.dailyGasWei } : {}),
-    tell: (to, text) => s.telegram.deliver({ kind: "send", chatId: to, text }),
+    tell: (to, text) => s.telegram.deliver({ kind: "send", chatId: to, text }).then(() => undefined),
     feed: { chatId: "-100", post: async (text, keyboard) => { if (feed.post) await feed.post(text); posted.push({ text, keyboard, executesSoFar: s.session.calls.length }); } },
   });
   const bot = new SessionBot({ reads, session: s.session.s, links: s.links, telegram: s.telegram, botUsername: "usechit_bot", siteUrl: "https://chit.tools", now: () => clock, copy, orus, ...opts });
@@ -933,6 +933,25 @@ test("the linked home's keyboard: Positions and Orders share the first row, the 
   const b = buttons();
   assert.deepEqual(b.slice(0, 2), ["pos", "orders"], "what a trader taps most comes first");
   assert.ok(b.indexOf("connect") > b.indexOf("orders") && b.indexOf("connect") < b.indexOf("help"), "Re-link under the trading rows, above Help");
+});
+
+test("a trade is one message: the progress line is sent, then edited into the result, so the chat does not fill with pairs", async () => {
+  const { links, bot, telegram, session } = setup({ positions: new MemoryPositionLedger() });
+  await linked(links);
+  session.allowSell(true);
+  await bot.handle(tap(`b:${PEPE}:0.01`));
+  const sent = telegram.sent.filter((o) => o.kind !== "answer" && o.kind !== "typing");
+  const progress = sent.at(-2) as { kind: string; text: string };
+  const result = sent.at(-1) as { kind: string; messageId?: number; text: string };
+  assert.equal(progress.kind, "send");
+  assert.match(progress.text, /^buying <code>0\.01 ETH<\/code> of <b>PEPE<\/b>/);
+  assert.equal(result.kind, "edit", "the result lands on the progress message");
+  assert.equal(result.messageId, telegram.sent.indexOf(progress as never) + 1, "that very message");
+  assert.match(result.text, /^buying <code>0\.01 ETH<\/code> of <b>PEPE<\/b>.*\nlanded\./s, "the order and its outcome in one message");
+  await bot.handle(tap(`s:${PEPE}:50`));
+  const sale = telegram.sent.filter((o) => o.kind !== "answer" && o.kind !== "typing").at(-1) as { kind: string; text: string };
+  assert.equal(sale.kind, "edit");
+  assert.match(sale.text, /^selling .*\nlanded\./s);
 });
 
 test("a Positions tap says it is reading at once, in the tapped message, before the card replaces it", async () => {
