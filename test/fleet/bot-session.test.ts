@@ -912,6 +912,42 @@ test("📊 Positions: on the linked card when there is a trade record; lists the
   assert.deepEqual(priced.buttons().slice(-3), ["pos:eth", "pos:usd", "home"], "the toggle back to ETH, and refresh keeps dollars");
 });
 
+test("a Positions tap says it is reading at once, in the tapped message, before the card replaces it", async () => {
+  const positions = new MemoryPositionLedger();
+  const { links, bot, telegram } = setup({ positions });
+  await linked(links);
+  await bot.handle(tap("pos"));
+  const edits = telegram.sent.filter((o) => o.kind !== "answer") as { text: string }[];
+  assert.match(edits.at(-2)!.text, /⏳ reading your positions…/, "the first edit is the note");
+  assert.match(edits.at(-1)!.text, /📊 <b>your positions<\/b>/, "the card lands over it");
+});
+
+test("Positions taps that land while the read is still going are answered and dropped, and a chain scan slower than its budget never holds the card: the record's tokens show, and the scan's late answer is in the next card", async () => {
+  const positions = new MemoryPositionLedger();
+  let release: (tokens: Address[]) => void = () => undefined;
+  let scans = 0;
+  const OTHER = "0x00000000000000000000000000000000000000c2" as Address;
+  const quotable = { ...reads, async tokenInfo(token: Address) { return { ...(await reads.tokenInfo(token)), symbol: token === OTHER ? "GIFT" : "PEPE", hasPool: true }; }, async quoteSell(_t: Address, tokensIn: bigint) { return (tokensIn * 10n ** 18n) / 1_000_000_000_000n; } } as unknown as BotChain;
+  const { links, bot, telegram, session } = setup({ positions, heldScanWaitMs: 20, reads: quotable });
+  session.s.heldTokens = () => { scans += 1; return new Promise<Address[]>((r) => { release = r; }); };
+  await linked(links);
+  await bot.handle(tap(`b:${PEPE}:0.01`));
+  const first = bot.handle(tap("pos", false, 201));
+  await new Promise((r) => setTimeout(r, 5));
+  await bot.handle(tap("pos", false, 202));
+  const answers = telegram.sent.filter((o) => o.kind === "answer" && (o as { text?: string }).text).map((o) => (o as { text: string }).text);
+  assert.deepEqual(answers, ["still reading your positions. one moment."]);
+  await first;
+  const last = () => ([...telegram.sent].reverse().find((o) => o.kind !== "answer") as { text: string }).text;
+  assert.match(last(), /<b>PEPE<\/b>/, "the card came from the record, the scan still out");
+  assert.equal(scans, 1, "one scan for two taps");
+  release([OTHER]);
+  await new Promise((r) => setTimeout(r, 5));
+  await bot.handle(tap("pos", false, 203));
+  assert.match(last(), /<b>GIFT<\/b>/, "the late answer is in the next card");
+  assert.equal(scans, 1, "and kept, so no second scan");
+});
+
 test("under the $CHIT holders line a buy tap is refused in words and nothing is sent, while a sell still goes through, so nobody is trapped in a position", async () => {
   const under = async () => ({ ok: false as const, holds: 12_000n * 10n ** 18n, need: 100_000n * 10n ** 18n });
   const { links, session, bot, textAt } = setup({ holders: under });

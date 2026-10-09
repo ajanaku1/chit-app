@@ -111,10 +111,19 @@ export type SessionBotDeps = {
   playgroundFloor?: boolean;
   /** Where the free playground lives when it is not a room in this bot (FLEET_TESTNET_URL): the door is a link to it (T082). */
   playgroundUrl?: string;
+  /** How long a Positions tap waits for the chain scan of received tokens before the card goes out without it; default 2 500. */
+  heldScanWaitMs?: number;
   now?: () => Date;
 };
 
-const DEFAULTS = { dailyExecutes: 200, dailyGasWei: 2_000_000_000_000_000n, buySlippageBps: 300, buyPresetsEth: ["0.005", "0.01", "0.05"], sellSlippageBps: 300, sellPresetsPct: [25, 50, 100] };
+const DEFAULTS = { dailyExecutes: 200, dailyGasWei: 2_000_000_000_000_000n, buySlippageBps: 300, buyPresetsEth: ["0.005", "0.01", "0.05"], sellSlippageBps: 300, sellPresetsPct: [25, 50, 100], heldScanWaitMs: 2_500 };
+/**
+ * Positions used to wait for the chain scan of every token the account ever received (heldTokens), and on the public
+ * RPC that is a 20-second walk through 60 pieces of 19 500 blocks, 1.4 days of history, for a card that was then shown
+ * cold. Now the card is built from the trade record and whatever the scan found within `heldScanWaitMs`; a scan that
+ * runs over keeps going and its answer is kept for the next tap, for this long.
+ */
+const HELD_CACHE_MS = 10 * 60_000;
 /** What the daily gas budget charges per send: the gas ceiling at one gwei, so a loop is stopped early rather than late. */
 const EXECUTE_GAS_WEI = 700_000n * 1_000_000_000n;
 /** A sale's ceiling (bot-session-chain.ts SELL_GAS): the swap with its two approvals made and cleared around it. */
@@ -244,7 +253,8 @@ export class SessionBot {
     if (this.#alerts?.owns(verb ?? "")) { await ack(); return this.#alerts.callback(chatId, tgId, verb!, a); }
     switch (verb) {
       case "home": await ack(); return this.#home(chatId, tgId, messageId);
-      case "pos": await ack(); return this.#positions(chatId, tgId, messageId, a === "usd" ? "usd" : "eth");
+      // A tap that lands while the last read is still going is answered and dropped: one read per person, and no pile of them on the RPC.
+      case "pos": if (this.#reading.has(tgId)) return ack("still reading your positions. one moment."); await ack(); return this.#positions(chatId, tgId, messageId, a === "usd" ? "usd" : "eth");
       case "connect": await ack(); return this.#connect(chatId, tgId);
       case "joinhow": await ack(); return this.#say(chatId, "send /join and the nickname the board shows, like <code>/join moonboy</code>. letters, digits, _ . - only, 3 to 20 of them.");
       case "comp": await ack(); return this.#d.comp ? this.#competition(chatId, tgId, messageId) : this.#help(chatId);
@@ -373,15 +383,41 @@ export class SessionBot {
   }
 
   /** 📊 Positions (bot-positions-card.ts): in ETH, or in dollars when a price is to hand; each token opens its card. */
+  /** Who has a Positions read going, and the scan's last answer per account (HELD_CACHE_MS). Per instance: a read is not money. */
+  readonly #reading = new Set<string>();
+  readonly #held = new Map<string, { at: number; tokens: Address[] }>();
+  /** The chain scan, waited for `heldScanWaitMs` at most: its answer when it is in, the last one or none when it is not; a late answer is kept. */
+  async #heldTokens(account: Address): Promise<Address[]> {
+    const scan = this.#d.session.heldTokens;
+    if (!scan) return [];
+    const key = account.toLowerCase();
+    const hit = this.#held.get(key);
+    if (hit && this.#now.getTime() - hit.at < HELD_CACHE_MS) return hit.tokens;
+    const pending = scan.call(this.#d.session, account).then((tokens) => { this.#held.set(key, { at: Date.now(), tokens }); return tokens; }).catch(() => hit?.tokens ?? []);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), this.#cfg("heldScanWaitMs")); timer.unref?.(); });
+    const tokens = await Promise.race([pending, late]);
+    clearTimeout(timer);
+    return tokens ?? hit?.tokens ?? [];
+  }
+
   async #positions(chatId: string, tgId: string, messageId: number | undefined, unit: "eth" | "usd"): Promise<void> {
     const link = await this.#d.links.getLink(tgId);
     if (!link || !this.#d.positions) return this.#home(chatId, tgId, messageId);
+    this.#reading.add(tgId);
+    try {
+      // Said at once, in the tapped message: the reads take seconds, and a card that goes quiet reads as a bot that is down.
+      await this.#out(chatId, messageId, "⏳ reading your positions…", kb());
+      await this.#positionsCard(chatId, link.account, messageId, unit);
+    } finally { this.#reading.delete(tgId); }
+  }
+
+  async #positionsCard(chatId: string, account: Address, messageId: number | undefined, unit: "eth" | "usd"): Promise<void> {
     // The price is waited for briefly: the first read scans the chain and can take long; the card then shows ETH and the next tap offers dollars.
     const usdPerEth = this.#d.usdPerEth ? await Promise.race([this.#d.usdPerEth().catch(() => undefined), new Promise<undefined>((r) => setTimeout(() => r(undefined), USD_WAIT_MS))]) : undefined;
     const view = unit === "usd" && usdPerEth !== undefined ? { unit: "usd" as const, usdPerEth } : { unit: "eth" as const };
     const settle = this.#d.session.settle?.bind(this.#d.session);
-    const heldTokens = this.#d.session.heldTokens?.bind(this.#d.session);
-    const card = await positionsCard({ ledger: this.#d.positions, ...(settle ? { settle } : {}), ...(heldTokens ? { heldTokens } : {}), reads: this.#d.reads }, link.account, view);
+    const card = await positionsCard({ ledger: this.#d.positions!, ...(settle ? { settle } : {}), heldTokens: (a) => this.#heldTokens(a), reads: this.#d.reads }, account, view);
     const tokenRows: Keyboard = [];
     for (let i = 0; i < card.tokens.length; i += 2) tokenRows.push(card.tokens.slice(i, i + 2).map((t) => btn(t.symbol, `token:${t.token}`)));
     const toggle = usdPerEth === undefined ? [] : [btn(view.unit === "usd" ? "Ξ show in ETH" : "$ show in dollars", view.unit === "usd" ? "pos:eth" : "pos:usd")];
