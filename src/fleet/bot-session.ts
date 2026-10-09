@@ -418,11 +418,13 @@ export class SessionBot {
   }
 
   async #positionsCard(chatId: string, account: Address, messageId: number | undefined, unit: "eth" | "usd"): Promise<void> {
-    // The price is waited for briefly: the first read scans the chain and can take long; the card then shows ETH and the next tap offers dollars.
+    // The chain scan's clock starts now, alongside the price's, so the two waits overlap instead of adding up (seen live 2026-10-09: 5-9 s in series).
+    const held = this.#heldTokens(account);
+    // The price is waited for briefly; without it the card shows ETH and the next tap offers dollars.
     const usdPerEth = this.#d.usdPerEth ? await Promise.race([this.#d.usdPerEth().catch(() => undefined), new Promise<undefined>((r) => setTimeout(() => r(undefined), USD_WAIT_MS))]) : undefined;
     const view = unit === "usd" && usdPerEth !== undefined ? { unit: "usd" as const, usdPerEth } : { unit: "eth" as const };
     const settle = this.#d.session.settle?.bind(this.#d.session);
-    const card = await positionsCard({ ledger: this.#d.positions!, ...(settle ? { settle } : {}), heldTokens: (a) => this.#heldTokens(a), reads: this.#d.reads }, account, view);
+    const card = await positionsCard({ ledger: this.#d.positions!, ...(settle ? { settle } : {}), heldTokens: () => held, reads: this.#d.reads }, account, view);
     const tokenRows: Keyboard = [];
     for (let i = 0; i < card.tokens.length; i += 2) tokenRows.push(card.tokens.slice(i, i + 2).map((t) => btn(t.symbol, `token:${t.token}`)));
     const toggle = usdPerEth === undefined ? [] : [btn(view.unit === "usd" ? "Ξ show in ETH" : "$ show in dollars", view.unit === "usd" ? "pos:eth" : "pos:usd")];
