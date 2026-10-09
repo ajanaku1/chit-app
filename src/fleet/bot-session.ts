@@ -312,6 +312,8 @@ export class SessionBot {
     return this.#d.telegram.deliver({ kind: "send", chatId, text, ...(keyboard ? { keyboard } : {}) });
   }
 
+  /** "typing…" under the bot's name while a card's reads run: fired, never waited for, never fatal. */
+  #typing(chatId: string): void { void this.#d.telegram.deliver({ kind: "typing", chatId }).catch(() => undefined); }
   #mode(): string { return `<b>Robinhood Chain</b> · ${this.#d.session.chainId} · Your keys stay with you`; }
   /**
    * The door to the free playground. A room in this bot is one tap and stays
@@ -357,6 +359,7 @@ export class SessionBot {
       // alerts: no link needed, the alert goes to this chat.
       return this.#out(chatId, messageId, text, kb([btn("🔗 Connect your wallet", "connect")], ...(this.#d.comp ? [[btn("🏆 Competition", "comp")]] : []), ...(this.#alerts ? [this.#alerts.homeRow()] : []), [btn("❓ Help", "help")], ...this.#door()));
     }
+    this.#typing(chatId);
     const [s, ethBal] = await Promise.all([this.#d.session.sessionOf(link.account), this.#d.reads.ethBalance(link.account)]);
     const state = sessionState(s, Math.floor(this.#now.getTime() / 1000));
     const lines = [
@@ -368,15 +371,16 @@ export class SessionBot {
       state === "active" ? "paste any token's contract address to see its card and buy from your account." : `manage the session on the <a href="${this.#d.siteUrl}/app/sessions">Sessions page</a>: fund, grant, pause, resume, revoke, withdraw. only you can.`,
       "<i>beta. holders only. not audited by a firm yet.</i>",
     ];
+    // What a trader taps most comes first and two to a row; the account's own pages sit under them. Twelve buttons in six rows, not nine.
+    const trading = [...(this.#d.positions ? [btn("📊 Positions", "pos")] : []), ...(this.#d.orders ? [btn("📋 Orders", "orders")] : [])];
     return this.#out(chatId, messageId, lines.join("\n"), kb(
-      [url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("🔗 Re-link", "connect")],
-      ...(this.#d.positions ? [[btn("📊 Positions", "pos")]] : []),
-      ...(this.#d.orders ? [[btn("📋 Orders", "orders")]] : []),
+      ...(trading.length ? [trading] : []),
       ...(this.#d.comp ? [[btn("🏆 Competition", "comp")]] : []),
       // copy: the leaders list, my follows, become or close leader.
       ...(this.#copy ? await this.#copy.homeRows(tgId) : []),
       // alerts: on, off and the line (bot-alert-cards.ts).
       ...(this.#alerts ? [this.#alerts.homeRow()] : []),
+      [url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("🔗 Re-link", "connect")],
       [btn("❓ Help", "help"), btn("↻ Refresh", "home")],
       ...this.#door(),
     ));
@@ -405,6 +409,7 @@ export class SessionBot {
     const link = await this.#d.links.getLink(tgId);
     if (!link || !this.#d.positions) return this.#home(chatId, tgId, messageId);
     this.#reading.add(tgId);
+    this.#typing(chatId);
     try {
       // Said at once, in the tapped message: the reads take seconds, and a card that goes quiet reads as a bot that is down.
       await this.#out(chatId, messageId, "⏳ reading your positions…", kb());
@@ -475,6 +480,7 @@ export class SessionBot {
   async #tokenCard(chatId: string, tgId: string, token: Address, messageId?: number): Promise<void> {
     const link = await this.#d.links.getLink(tgId);
     if (!link) return this.#home(chatId, tgId);
+    this.#typing(chatId);
     const [info, held, scan, hey, fixedPermit2] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account), this.#d.orus?.scan(token), this.#d.hey?.scan(token), this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)]);
     if (!info.hasPool) return this.#out(chatId, messageId, `<b>${esc(info.symbol)}</b> <code>${token}</code>\n\n${await this.#noPool(token, info.symbol)}`, kb([btn("← Back", "home")]));
     const text = [
@@ -672,6 +678,7 @@ export class SessionBot {
     const orders = this.#d.orders;
     const link = await this.#d.links.getLink(tgId);
     if (!orders || !link) return this.#home(chatId, tgId, messageId);
+    this.#typing(chatId);
     const open = await orders.openFor(tgId, this.#d.session.chainId);
     if (!open.length) return this.#out(chatId, messageId, "no open orders. set a limit buy or a dca from any token's card, and a take profit or a stop loss from the card of a token you hold.", kb([btn("← Back", "home")]));
     const infos = new Map<string, { symbol: string; decimals: number }>();
