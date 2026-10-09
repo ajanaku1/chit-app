@@ -289,9 +289,30 @@ them, "unknown" where a partner has no read (never a missing line, which
 would read as clean), "read from the chain, not from us", and a "buy this"
 door into the bot by the token. Bounds: twenty group posts a pass and no
 more, one private message per user per token an hour, claimed in the store
-in one statement so two passes tell nobody twice. `BOT_WATCH_OFF=1` stops
-the cron and hides the button.
+in one statement so two passes tell nobody twice. The subscribers are told
+before the group: the people who asked for the feed never hear it after
+the room. `BOT_WATCH_OFF=1` stops the cron and hides the button.
 `src/fleet/bot-alerts.ts`, `src/fleet/bot-alert-cards.ts`.
+
+The same window goes on to the risk watch, three events read from the
+chain's own logs:
+- **A graduation.** A launchpad token (`BOT_LAUNCHPAD_FACTORY`) whose curve
+  is done gets its Uniswap pool. It is told once ever, to the subscribers
+  and then the group, with the card's door.
+- **Liquidity pulled.** Half or more of the liquidity that sits at the
+  price leaves the pool of a token the bot's users traded in the last
+  thirty days, in one transaction.
+- **The dev selling.** The address the launchpad names as a token's
+  deployer takes 0.05 ETH or more out of its pool.
+
+Each of the last two is told once a pool or token per UTC day:
+- first, privately, to every linked account that traded the token and
+  still holds some, with **🚪 Sell 100%** (the bot's own sell from the
+  account) and the card;
+- then to the group, with the card only.
+
+An exit is never held back by the $CHIT holders line. `BOT_RISK_OFF=1`
+turns it off; the buys still run. `src/fleet/bot-risk.ts`.
 
 ## What is built, what is next
 

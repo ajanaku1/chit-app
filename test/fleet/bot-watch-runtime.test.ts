@@ -111,11 +111,11 @@ test("no CRON_SECRET, no pass; the wrong bearer is 401; the right one runs once,
     assert.deepEqual(asked, [BUYER, BUYER], "every buy reaches the desk, the small one too; a wallet nobody claimed is nothing to it");
     assert.equal(mirrors.length, 0);
     const sent = telegram.sent.filter((o) => o.kind === "send") as { chatId: string; text: string; keyboard?: unknown }[];
-    assert.deepEqual(sent.map((s) => s.chatId), ["-100", "7", "7"], "the group once (0.7 over 0.5), the subscriber twice (both over 0.005, two tokens)");
-    assert.match(sent[0]!.text, /bought <code>0.7 ETH<\/code> of <b>\$PEPE<\/b>/);
-    assert.match(sent[0]!.text, /orus: unknown, no read/);
-    assert.deepEqual(sent[0]!.keyboard, [[{ text: "buy this", url: `https://t.me/usechit_bot?start=t-${PEPE}` }]]);
-    assert.match(sent[1]!.text, /your line is 0.005 ETH a buy/);
+    assert.deepEqual(sent.map((s) => s.chatId), ["7", "-100", "7"], "the subscriber twice (both over 0.005, two tokens), the group once (0.7 over 0.5), and on the big buy the subscriber before the group");
+    assert.match(sent[1]!.text, /bought <code>0.7 ETH<\/code> of <b>\$PEPE<\/b>/, "the group's post");
+    assert.match(sent[1]!.text, /orus: unknown, no read/);
+    assert.deepEqual(sent[1]!.keyboard, [[{ text: "buy this", url: `https://t.me/usechit_bot?start=t-${PEPE}` }]]);
+    assert.match(sent[0]!.text, /bought <code>0.7 ETH<\/code>.*your line is 0.005 ETH a buy/s, "the subscriber's, the same buy, first");
     assert.equal(await store.cursor(4663), 1_000n);
     assert.equal(await store.seen(hash(2)), true);
   });
