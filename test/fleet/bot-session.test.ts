@@ -120,8 +120,8 @@ test("linked: the card reads the session and the account; a token card offers bu
   const { bot, telegram, buttons, links, session, textAt } = setup();
   await linked(links);
   await bot.handle(dm("/start"));
-  assert.match(telegram.last(), /session <b>active<\/b>: <code>0.05 ETH<\/code> a trade, <code>0.5 ETH<\/code> in all/);
-  assert.match(telegram.last(), /account holds: <code>0.4 ETH<\/code>/);
+  assert.match(telegram.last(), /<b>Session<\/b> active · <code>0.05 ETH<\/code> a trade · <code>0.5 ETH<\/code> in all/);
+  assert.match(telegram.last(), /<b>Balance<\/b> <code>0.4 ETH<\/code>/);
   await bot.handle(dm(PEPE));
   assert.match(telegram.last(), /<b>PEPE<\/b>/);
   assert.match(telegram.last(), /your account holds: <code>42 PEPE<\/code>/);
@@ -148,7 +148,7 @@ test("linked: the card reads the session and the account; a token card offers bu
   session.refuseWith(null);
   session.set({ paused: true });
   await bot.handle(tap("home"));
-  assert.match(telegram.last(), /session <b>paused<\/b> by you/);
+  assert.match(telegram.last(), /<b>Session<\/b> paused by you/);
 });
 
 test("the daily execute limit stops a loop, per user, and resets with the day", async () => {
