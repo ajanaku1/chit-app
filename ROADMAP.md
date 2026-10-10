@@ -8,9 +8,9 @@ Nothing below carries a public date until it is merged. Weeks are planning weeks
 
 **Week 1 of 5** (13 to 19 October 2026). The weekly drop is one-tap links.
 
-**Right now:** PR #146 (links) and #147 (app front door) are green and waiting for a merge. Take profit and stop loss, session-expiry messages and the alerts stack are merged and waiting for one deploy of chit-app, which needs `BOT_LAUNCHPAD_FACTORY` set on the watch function first.
+**Right now:** one deploy of chit-app on 10 October carried links, the app front door, take profit and stop loss, session-expiry messages and the alerts stack. All five are live and none is announced yet.
 
-**Next up:** merge and deploy, post the links drop, then take profit and stop loss goes out in week 2.
+**Next up:** post the links drop, then the Neon event log and referral store (R11, R14). Take profit and stop loss is posted in week 2, alerts in week 3, each on its own day.
 
 ## How to read the status
 
@@ -44,12 +44,12 @@ A drop is done at **announced**, nothing earlier.
 
 | Week | Dates | Drop | R | Owner | Status | What moves it |
 |---|---|---|---|---|---|---|
-| 1 | 13 to 19 Oct | One-tap links: `t-<token>` opens the card for anyone; `t-<token>-<code>` credits the group | R10 | Claude | PR #146 | merge, deploy chit-app, post |
-| 1 | 13 to 19 Oct | App front door goes to /app/balance | R13 | Claude | PR #147 | merge, deploy chit-app |
-| 1 | 13 to 19 Oct | Bot event log in Neon, referral attribution store | R11, R14 | Claude | planned | start after #146 lands |
-| 2 | 20 to 26 Oct | Take profit and stop loss | R17, R20 | Lucian | merged | deploy chit-app, post |
-| 2 | 20 to 26 Oct | Session-expiry messages, Renew as a fresh Connect | R23 | Lucian | merged | same deploy |
-| 3 | 27 Oct to 2 Nov | Alerts: graduation, rug alarm, holders first | R25, R30 | Lucian | merged | `BOT_LAUNCHPAD_FACTORY` on the watch function, the port's fork test, deploy, post |
+| 1 | 13 to 19 Oct | One-tap links: `t-<token>` opens the card for anyone; `t-<token>-<code>` credits the group | R10 | Claude | deployed | post |
+| 1 | 13 to 19 Oct | App front door goes to /app/balance | R13 | Claude | deployed | nothing; the row moves to Live now with the links post |
+| 1 | 13 to 19 Oct | Bot event log in Neon, referral attribution store | R11, R14 | Claude | planned | next build |
+| 2 | 20 to 26 Oct | Take profit and stop loss | R17, R20 | Lucian | deployed | post, in week 2 |
+| 2 | 20 to 26 Oct | Session-expiry messages, Renew as a fresh Connect | R23 | Lucian | deployed | same post |
+| 3 | 27 Oct to 2 Nov | Alerts: graduation, rug alarm, holders first | R25, R30 | Lucian | deployed | the port's fork test (R30), post in week 3 |
 | 3 | 31 Oct 12:00 UTC | Competition closes: score, pay, publish, interview the winner | R31 | Founder, CM | planned | the date |
 | 4 | 3 to 9 Nov | Community boards, the next competition's format | R33, R40 | Claude | planned | the scoring rule (distinct wallets and counted trades, never raw volume) |
 | 5 | 10 to 16 Nov | Fees on: rate, holder discount, first trade on us, fixed share to the burn, P&L burn counter, referral payouts | R41 to R44, R50 | Claude builds, Founder decides | held | the founder's fee numbers (R04) |
@@ -88,3 +88,4 @@ Multi-wallet buys at launch to make a token look wanted. Any auto-buy before Oru
 | 2026-10-08 | PRs 140, 144, 145 merged and deployed. #146 and #147 opened |
 | 2026-10-09 | Lucian's #148 (TP/SL), #149 (expiry), #150 (alerts) merged. #138 reopened, needs rebase. #146 rebased after conflict |
 | 2026-10-10 | This file created. Daily cadence and catalyst posts written (marketing/CHIT-CATALYST-POSTS-2026-10-10.md) |
+| 2026-10-10 | #146 (links, merged main in after #151 to #156) and #147 (front door) merged. chit-app deployed from 00a9edb: links, front door, take profit and stop loss, session expiry, alerts all live. `BOT_LAUNCHPAD_FACTORY` was already set |
