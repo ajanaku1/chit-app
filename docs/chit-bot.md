@@ -97,7 +97,13 @@ balance: 0.02 ETH
   button, and lands on the same card the first time they open the bot
   linked. `t-<contract>-<code>` does the same and notes the referral code
   (at most 8 characters; Telegram allows 64 in `start`) so that referrals
-  made during the beta count from the first day of fees.
+  made during the beta count from the first day of fees. **📣 Share link**,
+  after a landed buy and on the card of any token held, writes the person's
+  own link in a code block (tap to copy): the code is the first 8 of an HMAC
+  of their Telegram id under `BOT_KEY_SECRET`, so it is theirs and stable
+  and is not their id; the referral store is told the code was issued
+  (`referrals.issued`, optional) so an arrival through it can be matched.
+  Without the secret the button writes the plain `t-<contract>` door.
 - **Share** (📸 on Positions): the position as a picture, the kind people
   post when a trade went their way: the symbol, the change as one big
   number, what was paid and what the pool would fill right now, and the

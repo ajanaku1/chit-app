@@ -31,7 +31,7 @@ import { MemoryBotLinkStore } from "../../src/fleet/bot-link.js";
 import { MemoryPositionLedger } from "../../src/fleet/bot-positions.js";
 import { MemoryCompStore } from "../../src/fleet/bot-comp.js";
 import type { OrusScan } from "../../src/fleet/bot-orus.js";
-import { SessionBot, parseTokenLink } from "../../src/fleet/bot-session.js";
+import { SessionBot, parseTokenLink, referralCodeFor } from "../../src/fleet/bot-session.js";
 import type { SessionSell } from "../../src/fleet/session-keys.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 import { revertWords, sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
@@ -1275,4 +1275,60 @@ test("parseTokenLink: the two shapes, and what is not a link", () => {
   assert.equal(parseTokenLink(`t-${PEPE}-`), "malformed");
   assert.equal(parseTokenLink("f-0xabc"), undefined, "the copy desk's door is not ours");
   assert.equal(parseTokenLink("r-code"), undefined);
+});
+
+// ---------- the shill link (2026-10-10): after a buy, and on the card of a token held, a button writes the one-tap link with the person's code ----------
+
+const SECRET = "a-link-secret-of-thirty-two-characters-or-more!";
+
+test("referralCodeFor is 8 letters or digits, the same for one person and different for another, and needs the secret", () => {
+  const mine = referralCodeFor("7", SECRET);
+  assert.match(mine, /^[a-z0-9]{8}$/);
+  assert.equal(referralCodeFor("7", SECRET), mine, "stable");
+  assert.notEqual(referralCodeFor("8", SECRET), mine, "another person, another code");
+  assert.notEqual(referralCodeFor("7", "another-secret-of-thirty-two-characters!!"), mine, "another secret, another code");
+  assert.deepEqual(parseTokenLink(`t-${PEPE}-${mine}`), { token: PEPE, code: mine }, "the code fits the link the bot reads");
+});
+
+test("a landed buy offers 📣 Share link; the tap writes the t- link with the person's code, tap to copy, and tells the store the code was issued", async () => {
+  const issued: { tgId: string; code: string }[] = [];
+  const { bot, telegram, buttons, links } = setup({ linkSecret: SECRET, referrals: { arrived: async () => undefined, issued: async (tgId, code) => { issued.push({ tgId, code }); } } });
+  await linked(links);
+  await bot.handle(tap(`b:${PEPE}:0.005`));
+  assert.match(telegram.last(), /landed\./);
+  assert.ok(buttons().includes(`share:${PEPE}`), "the buy result offers the link");
+  await bot.handle(tap(`share:${PEPE}`));
+  const code = referralCodeFor("7", SECRET);
+  assert.match(telegram.last(), new RegExp(`<code>https://t\\.me/usechit_bot\\?start=t-${PEPE}-${code}</code>`), "the link, in a code block so one tap copies it");
+  assert.match(telegram.last(), /PEPE/, "names the token");
+  assert.match(telegram.last(), /count as yours/i, "says what the code is for");
+  assert.deepEqual(issued, [{ tgId: "7", code }], "the store learns whose code this is");
+  assert.deepEqual(buttons(), [`token:${PEPE}`, "home"]);
+});
+
+test("the card of a token held offers 📣 Share link; a token not held does not; a failed buy does not", async () => {
+  const { bot, buttons, links } = setup({ linkSecret: SECRET });
+  await linked(links);
+  await bot.handle(dm(PEPE));
+  assert.ok(buttons().includes(`share:${PEPE}`), "held: the card offers the link");
+  const empty = setup({ linkSecret: SECRET, reads: { ...reads, async tokenBalance() { return 0n; } } as unknown as BotChain });
+  await linked(empty.links);
+  await empty.bot.handle(dm(PEPE));
+  assert.ok(!empty.buttons().includes(`share:${PEPE}`), "not held: nothing to shill yet");
+  const reverted = setup({ linkSecret: SECRET, session: { ...fakeSession().s, async execute() { return { hash: ("0x" + "ab".repeat(32)) as Hex, landed: false, reverted: true }; } } });
+  await linked(reverted.links);
+  await reverted.bot.handle(tap(`b:${PEPE}:0.005`));
+  assert.ok(!reverted.buttons().includes(`share:${PEPE}`), "a buy that failed offers no link");
+});
+
+test("without a link secret the share message carries the plain t- link and no code; a failing store never stops the message; unlinked goes home", async () => {
+  const plain = setup({ referrals: { arrived: async () => undefined, issued: async () => { throw new Error("store down"); } } });
+  await linked(plain.links);
+  await plain.bot.handle(tap(`share:${PEPE}`));
+  assert.match(plain.telegram.last(), new RegExp(`<code>https://t\\.me/usechit_bot\\?start=t-${PEPE}</code>`), "no secret: the door with no code");
+  assert.doesNotMatch(plain.telegram.last(), /count as yours/i);
+  const stranger = setup({ linkSecret: SECRET });
+  await stranger.bot.handle(tap(`share:${PEPE}`));
+  assert.match(stranger.telegram.last(), /The bot never holds your key/, "not linked: home");
+  assert.ok(stranger.buttons().includes("connect"), "with Connect");
 });
