@@ -382,6 +382,8 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
     ...(process.env.BOT_HEY_OFF === "1" ? {} : { hey: createHeyScanner({ chainId, ...(process.env.HEY_API_KEY ? { apiKey: process.env.HEY_API_KEY } : {}), ...(process.env.HEY_API_BASE ? { baseUrl: process.env.HEY_API_BASE } : {}) }) }),
     botUsername: username!,
     siteUrl: site,
+    // The person's own share link carries a code sealed from their Telegram id with the same secret the playground keys use.
+    ...(process.env.BOT_KEY_SECRET ? { linkSecret: process.env.BOT_KEY_SECRET } : {}),
     ...(overrides.playgroundFloor ? { playgroundFloor: true } : { ...(testnetHost() ? { playgroundUrl: testnetHost()! } : {}) }),
     ...(orders ? { orders } : {}),
     ...(alerts ? { alerts } : {}),

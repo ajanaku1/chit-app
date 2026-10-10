@@ -47,6 +47,7 @@ import type { LaunchCheck } from "./bot-launchpad.js";
 import { positionsCard } from "./bot-positions-card.js";
 import { noteProceeds, noteSent, saleProceeds, type PositionLedger } from "./bot-positions.js";
 import { type Address, type Hex, isAddress } from "viem";
+import { createHmac } from "node:crypto";
 import { AlertCards } from "./bot-alert-cards.js";
 import type { AlertStore } from "./bot-alerts.js";
 import type { BotChain } from "./bot-chain.js";
@@ -118,9 +119,18 @@ export type SessionBotDeps = {
    * link, so that referrals made during the beta count from the first day of fees. Absent, the code is read and
    * dropped and the link still opens the card. The store behind it is its own task (R14).
    */
-  referrals?: { arrived(tgId: string, code: string, at: Date): Promise<void> };
+  referrals?: { arrived(tgId: string, code: string, at: Date): Promise<void>; issued?(tgId: string, code: string, at: Date): Promise<void> };
+  /**
+   * Seals the referral code in a person's own share link (BOT_KEY_SECRET; 2026-10-10): the code is an HMAC of their
+   * Telegram id, so it is theirs, stable, and not their id. Absent, 📣 Share link writes the plain `t-<token>` door.
+   */
+  linkSecret?: string;
   now?: () => Date;
 };
+
+/** A person's referral code: the first 8 of the HMAC of their Telegram id, in base 36, so it fits `t-<token>-<code>`. */
+export const referralCodeFor = (tgId: string, secret: string): string =>
+  BigInt("0x" + createHmac("sha256", secret).update(`referral:${tgId}`).digest("hex")).toString(36).padStart(8, "0").slice(0, 8);
 
 /**
  * A one-tap link: `t.me/<bot>?start=t-<token>` opens the token's card, `t-<token>-<code>` opens it and notes the
@@ -280,6 +290,7 @@ export class SessionBot {
       case "joinhow": await ack(); return this.#say(chatId, "send /join and the nickname the board shows, like <code>/join moonboy</code>. letters, digits, _ . - only, 3 to 20 of them.");
       case "comp": await ack(); return this.#d.comp ? this.#competition(chatId, tgId, messageId) : this.#help(chatId);
       case "token": await ack(); return a && isAddress(a) ? this.#tokenCard(chatId, tgId, a as Address, messageId) : this.#help(chatId);
+      case "share": await ack(); return a && isAddress(a) ? this.#shareLink(chatId, tgId, a as Address) : this.#help(chatId);
       case "b": if (!(await this.#takeTrade(tgId))) return ack(BUSY); await ack(); return this.#oneTrade(tgId, () => (a && isAddress(a) && b ? this.#buy(chatId, tgId, a as Address, b, true, startedAt) : this.#help(chatId)));
       case "ask": {
         await ack();
@@ -567,8 +578,34 @@ export class SessionBot {
       ...(held > 0n ? [this.#cfg("sellPresetsPct").map((p) => btn(`Sell ${p}%`, `s:${token}:${p}`)), [btn("Sell custom", `asks:${token}`)]] : []),
       ...(this.#d.orders ? [[btn("⏱ Limit buy", `lim:${token}`), btn("🔁 DCA", `dca:${token}`)]] : []),
       ...(this.#d.orders && held > 0n ? [[btn("🎯 Take profit", `tp:${token}`), btn("🛑 Stop loss", `sl:${token}`)]] : []),
+      ...(held > 0n ? [[btn("📣 Share link", `share:${token}`)]] : []),
       [btn("↻ Refresh", `token:${token}`), btn("← Back", "home")],
     ), png);
+  }
+
+  /**
+   * The person's own one-tap link for a token they hold (2026-10-10): `t-<token>-<code>`, the code sealed from their
+   * Telegram id, in a code block so one tap copies it. Offered after a landed buy and on the card of a token held,
+   * since a link is worth posting once there is a position behind it. The store is told the code was issued, so
+   * a referral that arrives through it can be matched to this person (R14); a store that fails loses the note,
+   * not the link. Without a secret the link is the plain door, and the message says nothing about credit.
+   */
+  async #shareLink(chatId: string, tgId: string, token: Address): Promise<void> {
+    const link = await this.#d.links.getLink(tgId);
+    if (!link) return this.#home(chatId, tgId);
+    const code = this.#d.linkSecret ? referralCodeFor(tgId, this.#d.linkSecret) : undefined;
+    if (code && this.#d.referrals?.issued) await this.#d.referrals.issued(tgId, code, this.#now).catch(() => undefined);
+    const info = await this.#d.reads.tokenInfo(token);
+    const href = `https://t.me/${this.#d.botUsername}?start=t-${token}${code ? `-${code}` : ""}`;
+    const text = [
+      `your link for <b>${esc(info.symbol)}</b>:`,
+      `<code>${href}</code>`,
+      "<i>(tap to copy)</i>",
+      "",
+      "anyone who taps it sees the card and can connect and buy. post it where the token is talked about.",
+      ...(code ? ["buys through it count as yours from the first day of fees."] : []),
+    ].join("\n");
+    return this.#say(chatId, text, kb([btn("↻ Card", `token:${token}`), btn("← Back", "home")]));
   }
 
   // ---------- buy ----------
@@ -637,7 +674,7 @@ export class SessionBot {
       ? `landed. <a href="${explorer}">${short(r.hash)}</a> · the tokens are in your account.`
       : r.reverted ? `failed on chain: nothing was bought, and no ETH left your account. <a href="${explorer}">${short(r.hash)}</a>`
       : `sent, not confirmed as landed: <a href="${explorer}">${short(r.hash)}</a>. check the explorer; the account's floor protects the fill.`),
-      kb([btn("↻ Card", `token:${token}`), btn("← Back", "home")]));
+      kb(...(r.landed ? [[btn("📣 Share link", `share:${token}`)]] : []), [btn("↻ Card", `token:${token}`), btn("← Back", "home")]));
     // copy: a leader's landed buy goes to the feed and into the followers' accounts, after the leader's own fill, with what is left of the request's budget.
     if (r.landed && this.#copy) await this.#copy.afterBuy(chatId, tgId, token, wei, r.hash, info, startedAt + MIRRORS_UNTIL_MS);
   }
