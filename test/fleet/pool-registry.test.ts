@@ -20,6 +20,7 @@ import { type Address, createPublicClient, custom, decodeFunctionData, defineCha
 import { createBotChain } from "../../src/fleet/bot-chain.js";
 import { liquiditySlot, slot0Slot } from "../../src/fleet/market.js";
 import { RECORDED_POOLS, createPoolRegistry, poolIdOf, recordedPoolsFromEnv } from "../../src/fleet/pool-registry.js";
+import { MemoryPoolStore } from "../../src/fleet/pool-store.js";
 import { NATIVE_ETH, type PoolKey } from "../../src/fleet/v4-swap.js";
 
 const repoRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
@@ -163,6 +164,24 @@ test("discovery: every candidate is gathered before any is chosen, the token's o
   assert.equal(took.at(-1)![0], HEAD - 250_000n, "down to the window's floor");
   for (let i = 1; i < took.length; i++) assert.equal(took[i]![1], took[i - 1]![0] - 1n, "no gap between pieces");
   assert.ok(pieces.length <= 12, `a bounded number of queries, not ${pieces.length}`);
+});
+
+test("a found pool is kept in the store and another instance reads it instead of scanning; a kept pool gone dry is scanned for again", async () => {
+  const key = decoy(PEPE, 500, 10);
+  const store = new MemoryPoolStore();
+  const node = scriptedChain([{ key, block: HEAD - 5n, liquidity: 10n ** 18n }]);
+  const first = createPoolRegistry(node.client, POOL_MANAGER, { chainId: 4663, store });
+  assert.deepEqual((await first.find(PEPE))!.key, key);
+  assert.equal(node.logQueries().length, 1, "this instance scanned");
+  assert.deepEqual(await store.get(4663, PEPE), key, "and kept what it found");
+  const again = scriptedChain([{ key, block: HEAD - 5n, liquidity: 10n ** 18n }]);
+  const second = createPoolRegistry(again.client, POOL_MANAGER, { chainId: 4663, store });
+  assert.deepEqual((await second.find(PEPE))!.key, key);
+  assert.equal(again.logQueries().length, 0, "the next instance read the store, no scan");
+  const dry = scriptedChain([{ key, block: HEAD - 5n, liquidity: 0n }]);
+  const third = createPoolRegistry(dry.client, POOL_MANAGER, { chainId: 4663, store });
+  assert.equal(await third.find(PEPE), null);
+  assert.equal(dry.logQueries().length, 1, "a kept pool with no liquidity is looked for again");
 });
 
 test("recordedPoolsFromEnv: unset is nothing, entries are token:fee:tickSpacing:hooks with the addresses checksummed and the numbers whole, and anything else (a wrongly cased address among it) is refused in the caller's words without a pool half read", () => {

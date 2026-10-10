@@ -211,8 +211,8 @@ const build = () => {
     ...(orus ? { orus } : {}),
     ...(hey ? { hey } : {}),
     botUsername: username!,
-    tell: (tgId, text, keyboard) => telegram.deliver({ kind: "send", chatId: tgId, text, ...(keyboard ? { keyboard } : {}) }),
-    ...(groupChatId ? { feed: { chatId: groupChatId, post: (text, keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }) } } : {}),
+    tell: (tgId, text, keyboard) => telegram.deliver({ kind: "send", chatId: tgId, text, ...(keyboard ? { keyboard } : {}) }).then(() => undefined),
+    ...(groupChatId ? { feed: { chatId: groupChatId, post: (text, keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }).then(() => undefined) } } : {}),
     ...(groupMin ? { groupMinWei: parseEther(groupMin) } : {}),
   });
   // The copy desk over this function's own parts, the way the webhook builds its own (bot-copy-runtime.ts): a wallet leader's buy is mirrored from here.
@@ -243,8 +243,8 @@ const build = () => {
     held: overrides.held ?? heldFromSql(sql),
     subs: overrides.alertStore ?? (sql ? new NeonAlertStore(sql) : new MemoryAlertStore()),
     ...(launch ? { launch } : {}),
-    tell: (tgId, text, keyboard) => telegram.deliver({ kind: "send", chatId: tgId, text, ...(keyboard ? { keyboard } : {}) }),
-    ...(groupChatId ? { feed: { post: (text: string, keyboard: Keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }) } } : {}),
+    tell: (tgId, text, keyboard) => telegram.deliver({ kind: "send", chatId: tgId, text, ...(keyboard ? { keyboard } : {}) }).then(() => undefined),
+    ...(groupChatId ? { feed: { post: (text: string, keyboard: Keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }).then(() => undefined) } } : {}),
     botUsername: username!,
   });
   const inner = new Watcher({

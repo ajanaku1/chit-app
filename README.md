@@ -2,6 +2,8 @@
 
 A trader who runs many wallets has to fund them. Doing that from one main wallet publishes the whole fleet on chain. Chit funds the fleet instead, so no transaction joins the trader's main wallet to a fleet account.
 
+What is live, what is coming and where each piece stands: [ROADMAP.md](ROADMAP.md).
+
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.28-363636?logo=solidity)](https://soliditylang.org/)
 [![Network](https://img.shields.io/badge/network-Robinhood%20testnet%2046630-6B7280)]()

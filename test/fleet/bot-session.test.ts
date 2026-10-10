@@ -90,10 +90,10 @@ const setup = (opts: Partial<Deps> = {}) => {
   const telegram = new RecordingTelegram();
   const bot = new SessionBot({ reads, session: session.s, links, telegram, botUsername: "usechit_bot", siteUrl: "https://chit.tools", now: () => clock, ...opts });
   const buttons = (): string[] => {
-    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: { callback_data?: string; url?: string }[][] } | undefined;
+    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: { callback_data?: string; url?: string }[][] } | undefined;
     return (last?.keyboard ?? []).flat().map((b) => b.callback_data ?? b.url ?? "");
   };
-  const textAt = (i: number): string => { const o = telegram.sent.at(i); return o && o.kind !== "answer" ? o.text : ""; };
+  const textAt = (i: number): string => { const o = telegram.sent.at(i); return o && o.kind !== "answer" && o.kind !== "typing" ? o.text : ""; };
   return { links, session, telegram, bot, buttons, textAt };
 };
 
@@ -120,8 +120,8 @@ test("linked: the card reads the session and the account; a token card offers bu
   const { bot, telegram, buttons, links, session, textAt } = setup();
   await linked(links);
   await bot.handle(dm("/start"));
-  assert.match(telegram.last(), /session <b>active<\/b>: <code>0.05 ETH<\/code> a trade, <code>0.5 ETH<\/code> in all/);
-  assert.match(telegram.last(), /account holds: <code>0.4 ETH<\/code>/);
+  assert.match(telegram.last(), /<b>Session<\/b> active · <code>0.05 ETH<\/code> a trade · <code>0.5 ETH<\/code> in all/);
+  assert.match(telegram.last(), /<b>Balance<\/b> <code>0.4 ETH<\/code>/);
   await bot.handle(dm(PEPE));
   assert.match(telegram.last(), /<b>PEPE<\/b>/);
   assert.match(telegram.last(), /your account holds: <code>42 PEPE<\/code>/);
@@ -148,7 +148,7 @@ test("linked: the card reads the session and the account; a token card offers bu
   session.refuseWith(null);
   session.set({ paused: true });
   await bot.handle(tap("home"));
-  assert.match(telegram.last(), /session <b>paused<\/b> by you/);
+  assert.match(telegram.last(), /<b>Session<\/b> paused by you/);
 });
 
 test("the daily execute limit stops a loop, per user, and resets with the day", async () => {
@@ -196,7 +196,7 @@ test("a tap that arrives from a group is answered and nothing is drawn or edited
   assert.equal(session.calls.length, 0);
   assert.deepEqual(telegram.sent, [{ kind: "answer", callbackId: "cb", text: "open the bot in private" }]);
   await bot.handle({ callback_query: { id: "cb2", data: `token:${PEPE}`, from: { id: 7 }, message: { message_id: 55, chat: { id: -100, type: "supergroup" } } } });
-  assert.ok(!telegram.sent.some((o) => o.kind !== "answer"), "no card into the group, no edit of the feed's message");
+  assert.ok(!telegram.sent.some((o) => o.kind !== "answer" && o.kind !== "typing"), "no card into the group, no edit of the feed's message");
 });
 
 test("with a plate renderer the token card is a picture; the plate says mainnet; refresh redraws in place", async () => {
@@ -226,7 +226,7 @@ const withCopy = (opts: Partial<Deps> = {}, feed: { post?: (text: string) => Pro
     ...(deskHolders ? { holders: deskHolders } : {}),
     // The daily limits are the bot's, as the runtime hands the same env to both.
     ...(opts.dailyExecutes !== undefined ? { dailyExecutes: opts.dailyExecutes } : {}), ...(opts.dailyGasWei !== undefined ? { dailyGasWei: opts.dailyGasWei } : {}),
-    tell: (to, text) => s.telegram.deliver({ kind: "send", chatId: to, text }),
+    tell: (to, text) => s.telegram.deliver({ kind: "send", chatId: to, text }).then(() => undefined),
     feed: { chatId: "-100", post: async (text, keyboard) => { if (feed.post) await feed.post(text); posted.push({ text, keyboard, executesSoFar: s.session.calls.length }); } },
   });
   const bot = new SessionBot({ reads, session: s.session.s, links: s.links, telegram: s.telegram, botUsername: "usechit_bot", siteUrl: "https://chit.tools", now: () => clock, copy, orus, ...opts });
@@ -901,7 +901,7 @@ test("📊 Positions: on the linked card when there is a trade record; lists the
   assert.ok(buttons().includes("pos"), "the linked card offers Positions");
   await bot.handle(tap(`b:${PEPE}:0.01`));
   await bot.handle(tap("pos"));
-  const last = () => { const o = [...telegram.sent].reverse().find((x) => x.kind !== "answer") as { text: string }; return o.text; };
+  const last = () => { const o = [...telegram.sent].reverse().find((x) => x.kind !== "answer" && x.kind !== "typing") as { text: string }; return o.text; };
   assert.match(last(), /📊 <b>your positions<\/b>/);
   assert.match(last(), /<b>PEPE<\/b>/);
   assert.deepEqual(buttons(), [`token:${PEPE}`, "pos:eth", "home"], "no dollars without a price");
@@ -910,6 +910,84 @@ test("📊 Positions: on the linked card when there is a trade record; lists the
   await priced.bot.handle(tap("pos:usd"));
   assert.match(((priced.telegram.sent.at(-1)) as { text: string }).text, /per ETH/);
   assert.deepEqual(priced.buttons().slice(-3), ["pos:eth", "pos:usd", "home"], "the toggle back to ETH, and refresh keeps dollars");
+});
+
+test("every card with reads behind it shows typing… first: the linked home, a token card, Positions and Orders; the unlinked home does not", async () => {
+  const positions = new MemoryPositionLedger();
+  const { links, bot, telegram } = setup({ positions });
+  await bot.handle(dm("/start"));
+  assert.deepEqual(telegram.typing, [], "nothing to read for a stranger");
+  await linked(links);
+  await bot.handle(dm("/start"));
+  await bot.handle(dm(PEPE));
+  await bot.handle(tap("pos"));
+  await bot.handle(tap("orders"));
+  assert.deepEqual(telegram.typing, ["7", "7", "7", "7"], "home, token card, Positions, Orders");
+});
+
+test("the linked home's keyboard: Positions and Orders share the first row, the account's pages sit under the trading rows", async () => {
+  const { MemoryOrderStore } = await import("../../src/fleet/bot-orders.js");
+  const { links, bot, buttons } = setup({ positions: new MemoryPositionLedger(), orders: new MemoryOrderStore() });
+  await linked(links);
+  await bot.handle(dm("/start"));
+  const b = buttons();
+  assert.deepEqual(b.slice(0, 2), ["pos", "orders"], "what a trader taps most comes first");
+  assert.ok(b.indexOf("connect") > b.indexOf("orders") && b.indexOf("connect") < b.indexOf("help"), "Re-link under the trading rows, above Help");
+});
+
+test("a trade is one message: the progress line is sent, then edited into the result, so the chat does not fill with pairs", async () => {
+  const { links, bot, telegram, session } = setup({ positions: new MemoryPositionLedger() });
+  await linked(links);
+  session.allowSell(true);
+  await bot.handle(tap(`b:${PEPE}:0.01`));
+  const sent = telegram.sent.filter((o) => o.kind !== "answer" && o.kind !== "typing");
+  const progress = sent.at(-2) as { kind: string; text: string };
+  const result = sent.at(-1) as { kind: string; messageId?: number; text: string };
+  assert.equal(progress.kind, "send");
+  assert.match(progress.text, /^buying <code>0\.01 ETH<\/code> of <b>PEPE<\/b>/);
+  assert.equal(result.kind, "edit", "the result lands on the progress message");
+  assert.equal(result.messageId, telegram.sent.indexOf(progress as never) + 1, "that very message");
+  assert.match(result.text, /^buying <code>0\.01 ETH<\/code> of <b>PEPE<\/b>.*\nlanded\./s, "the order and its outcome in one message");
+  await bot.handle(tap(`s:${PEPE}:50`));
+  const sale = telegram.sent.filter((o) => o.kind !== "answer" && o.kind !== "typing").at(-1) as { kind: string; text: string };
+  assert.equal(sale.kind, "edit");
+  assert.match(sale.text, /^selling .*\nlanded\./s);
+});
+
+test("a Positions tap says it is reading at once, in the tapped message, before the card replaces it", async () => {
+  const positions = new MemoryPositionLedger();
+  const { links, bot, telegram } = setup({ positions });
+  await linked(links);
+  await bot.handle(tap("pos"));
+  const edits = telegram.sent.filter((o) => o.kind !== "answer" && o.kind !== "typing") as { text: string }[];
+  assert.match(edits.at(-2)!.text, /⏳ reading your positions…/, "the first edit is the note");
+  assert.match(edits.at(-1)!.text, /📊 <b>your positions<\/b>/, "the card lands over it");
+});
+
+test("Positions taps that land while the read is still going are answered and dropped, and a chain scan slower than its budget never holds the card: the record's tokens show, and the scan's late answer is in the next card", async () => {
+  const positions = new MemoryPositionLedger();
+  let release: (tokens: Address[]) => void = () => undefined;
+  let scans = 0;
+  const OTHER = "0x00000000000000000000000000000000000000c2" as Address;
+  const quotable = { ...reads, async tokenInfo(token: Address) { return { ...(await reads.tokenInfo(token)), symbol: token === OTHER ? "GIFT" : "PEPE", hasPool: true }; }, async quoteSell(_t: Address, tokensIn: bigint) { return (tokensIn * 10n ** 18n) / 1_000_000_000_000n; } } as unknown as BotChain;
+  const { links, bot, telegram, session } = setup({ positions, heldScanWaitMs: 20, reads: quotable });
+  session.s.heldTokens = () => { scans += 1; return new Promise<Address[]>((r) => { release = r; }); };
+  await linked(links);
+  await bot.handle(tap(`b:${PEPE}:0.01`));
+  const first = bot.handle(tap("pos", false, 201));
+  await new Promise((r) => setTimeout(r, 5));
+  await bot.handle(tap("pos", false, 202));
+  const answers = telegram.sent.filter((o) => o.kind === "answer" && (o as { text?: string }).text).map((o) => (o as { text: string }).text);
+  assert.deepEqual(answers, ["still reading your positions. one moment."]);
+  await first;
+  const last = () => ([...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { text: string }).text;
+  assert.match(last(), /<b>PEPE<\/b>/, "the card came from the record, the scan still out");
+  assert.equal(scans, 1, "one scan for two taps");
+  release([OTHER]);
+  await new Promise((r) => setTimeout(r, 5));
+  await bot.handle(tap("pos", false, 203));
+  assert.match(last(), /<b>GIFT<\/b>/, "the late answer is in the next card");
+  assert.equal(scans, 1, "and kept, so no second scan");
 });
 
 test("under the $CHIT holders line a buy tap is refused in words and nothing is sent, while a sell still goes through, so nobody is trapped in a position", async () => {
@@ -1160,7 +1238,7 @@ test("a one-tap link before linking shows the token's card with Connect and no b
   assert.match(telegram.last(), /<b>PEPE<\/b>/, "linked now: the token the link was about");
   assert.ok(buttons().includes(`b:${PEPE}:0.005`), "with its buy buttons");
   await bot.handle(dm("/start"));
-  assert.match(telegram.last(), /session <b>active<\/b>/, "once: the next /start is home");
+  assert.match(telegram.last(), /<b>Session<\/b> active/, "once: the next /start is home");
 });
 
 test("a one-tap link with a code notes the referral once, a redelivered update notes nothing, and a linked person's link opens the full card", async () => {
@@ -1183,9 +1261,9 @@ test("a referral store that fails never stops the card; a malformed link goes ho
   await bot.handle(startWith(`t-${PEPE}-abc`));
   assert.match(telegram.last(), /<b>PEPE<\/b>/, "the door opens without the note");
   await bot.handle(startWith("t-notatoken"));
-  assert.match(telegram.last(), /session <b>active<\/b>/, "home");
+  assert.match(telegram.last(), /<b>Session<\/b> active/, "home");
   await bot.handle(startWith(`t-${PEPE}-toolongcode9`));
-  assert.match(telegram.last(), /session <b>active<\/b>/, "a code over 8 characters is not a link");
+  assert.match(telegram.last(), /<b>Session<\/b> active/, "a code over 8 characters is not a link");
   await bot.handle(startWith(`t-${PEPE.toUpperCase().replace("0X", "0x")}`));
   assert.match(telegram.last(), /<b>PEPE<\/b>/, "the address in upper case is the same token");
 });
