@@ -102,3 +102,4 @@ Multi-wallet buys to look organic. Any auto-buy before Orus returns. Any public 
 | 2026-10-09 | R23 | PR #149 merged: session-expiry messages, Renew is a fresh Connect (the account cannot extend a session; extend(key, expiry) on the next factory is the founder's call) |
 | 2026-10-09 | R25 | PR #150 merged: graduation alerts, rug alarm, holders-first on the watcher. R30 waits on the port's fork test and on BOT_LAUNCHPAD_FACTORY being set on the watch function |
 | 2026-10-09 | 138 | Lucian's gas-ceiling PR reopened for verify; conflicts with #148, rebase asked |
+| 2026-10-10 | R10, R13, R17, R20, R23, R25 | #146 and #147 merged; chit-app deployed from 00a9edb with all of them. Links and the front door are live; take profit and stop loss, expiry messages and alerts are live ahead of their weeks and wait for their posts. R30's fork test still open |
