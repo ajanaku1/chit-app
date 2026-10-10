@@ -113,7 +113,25 @@ export type SessionBotDeps = {
   playgroundUrl?: string;
   /** How long a Positions tap waits for the chain scan of received tokens before the card goes out without it; default 2 500. */
   heldScanWaitMs?: number;
+  /**
+   * Where a one-tap link's referral code is noted (`t-<token>-<code>`, 2026-10-08): who arrived through whose
+   * link, so that referrals made during the beta count from the first day of fees. Absent, the code is read and
+   * dropped and the link still opens the card. The store behind it is its own task (R14).
+   */
+  referrals?: { arrived(tgId: string, code: string, at: Date): Promise<void> };
   now?: () => Date;
+};
+
+/**
+ * A one-tap link: `t.me/<bot>?start=t-<token>` opens the token's card, `t-<token>-<code>` opens it and notes the
+ * referral. Telegram allows 64 characters of letters, digits, underscore and dash in `start`; the address is 42, so
+ * the code is at most 8. Anything else that starts with `t-` is a link that carries no token and goes to home.
+ */
+export const parseTokenLink = (param: string): { token: Address; code?: string } | "malformed" | undefined => {
+  if (!param.startsWith("t-")) return undefined;
+  const m = /^t-(0x[0-9a-fA-F]{40})(?:-([A-Za-z0-9]{1,8}))?$/.exec(param);
+  if (!m) return "malformed";
+  return { token: m[1]!.toLowerCase() as Address, ...(m[2] ? { code: m[2].toLowerCase() } : {}) };
 };
 
 const DEFAULTS = { dailyExecutes: 200, dailyGasWei: 2_000_000_000_000_000n, buySlippageBps: 300, buyPresetsEth: ["0.005", "0.01", "0.05"], sellSlippageBps: 300, sellPresetsPct: [25, 50, 100], heldScanWaitMs: 2_500 };
@@ -167,6 +185,8 @@ export class SessionBot {
   /** What the next reply from this user is for: a buy or a sell of the token, or a limit, dca, take profit or stop loss order on it. */
   readonly #pending = new Map<string, { token: Address; side: "buy" | "sell"; order?: Order["kind"] }>();
   readonly #photos = new Set<string>();
+  /** The token a one-tap link asked for before this person was linked: shown the next time they open the bot linked. */
+  readonly #wanted = new Map<string, Address>();
   readonly #copy: CopyCards | undefined;
   readonly #alerts: AlertCards | undefined;
   readonly #updates: UpdateClaims;
@@ -333,12 +353,45 @@ export class SessionBot {
   }
 
   async #start(chatId: string, tgId: string, param?: string): Promise<void> {
-    const linked = param?.startsWith("t-") ? param.slice(2) : undefined;
-    if (linked && isAddress(linked)) return this.#tokenCard(chatId, tgId, linked.toLowerCase() as Address);
+    const link = param ? parseTokenLink(param) : undefined;
+    if (link === "malformed") return this.#home(chatId, tgId);
+    if (link) {
+      // The code is noted before the card, and never stops the card: a store that fails loses the note, not the door.
+      if (link.code && this.#d.referrals) await this.#d.referrals.arrived(tgId, link.code, this.#now).catch(() => undefined);
+      return this.#tokenCard(chatId, tgId, link.token);
+    }
     // copy: the feed's "follow" door, /start f-<leaderAccount>.
     const follow = param && this.#copy ? this.#copy.start(chatId, tgId, param) : undefined;
     if (follow) return follow;
+    // Back from the Sessions page, now linked: the token the link was about, once.
+    const wanted = this.#wanted.get(tgId);
+    if (wanted && (await this.#d.links.getLink(tgId))) { this.#wanted.delete(tgId); return this.#tokenCard(chatId, tgId, wanted); }
     return this.#home(chatId, tgId);
+  }
+
+  /**
+   * The token's card for someone not yet linked (2026-10-08): the price and the pool, the safety lines, and the one
+   * thing to do next, Connect. No buy and no holding, since there is no account to read; the token is remembered so
+   * that the first linked /start lands on it. A one-tap link is a door, and a door that bounces to home is no door.
+   */
+  async #tokenPreview(chatId: string, tgId: string, token: Address): Promise<void> {
+    this.#wanted.set(tgId, token);
+    const [info, scan, hey] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.orus?.scan(token), this.#d.hey?.scan(token)]);
+    const keyboard = kb([btn("🔗 Connect your wallet", "connect")], [btn("❓ Help", "help")], ...this.#door());
+    if (!info.hasPool) return this.#say(chatId, `<b>${esc(info.symbol)}</b> <code>${token}</code>\n\n${await this.#noPool(token, info.symbol)}`, keyboard);
+    const text = [
+      this.#mode(),
+      "",
+      `<b>${esc(info.symbol)}</b> · <code>${token}</code> <i>(tap to copy)</i>`,
+      `price: <code>${fmt(info.perEth, info.decimals, 2)} ${esc(info.symbol)}</code> per ETH · pool: <code>${eth(info.poolEth, 4)} ETH</code>`,
+      ...(scan && this.#d.orus ? [`orus: ${orusLine(scan, this.#d.orus.link(token))}`] : []),
+      ...(hey ? [`hey research lab: ${heyLine(hey)}`] : []),
+      "",
+      "Connect your wallet to buy it. The bot never holds your key: you create a session account of your own and grant the bot a bounded key you can revoke in one transaction.",
+      "",
+      "<i>Beta · holders only · not audited by a firm yet</i>",
+    ].join("\n");
+    return this.#say(chatId, text, keyboard);
   }
 
   async #home(chatId: string, tgId: string, messageId?: number): Promise<void> {
@@ -489,7 +542,7 @@ export class SessionBot {
 
   async #tokenCard(chatId: string, tgId: string, token: Address, messageId?: number): Promise<void> {
     const link = await this.#d.links.getLink(tgId);
-    if (!link) return this.#home(chatId, tgId);
+    if (!link) return this.#tokenPreview(chatId, tgId, token);
     this.#typing(chatId);
     const [info, held, scan, hey, fixedPermit2] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account), this.#d.orus?.scan(token), this.#d.hey?.scan(token), this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)]);
     if (!info.hasPool) return this.#out(chatId, messageId, `<b>${esc(info.symbol)}</b> <code>${token}</code>\n\n${await this.#noPool(token, info.symbol)}`, kb([btn("← Back", "home")]));
