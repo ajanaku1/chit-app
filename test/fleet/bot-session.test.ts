@@ -1033,10 +1033,11 @@ test("a buy tap whose holders check could not be read says so and asks to try ag
  * tapping Sell 50% several times while the bot was slow got several sales.
  */
 test("a buy bigger than the account holds is refused before anything is sent, with what it holds and how to fund it", async () => {
-  const { links, session, bot, textAt } = setup({ reads: { ...reads, async ethBalance() { return parseEther("0.0007"); } } as unknown as BotChain });
+  const { links, session, bot, textAt, buttons } = setup({ reads: { ...reads, async ethBalance() { return parseEther("0.0007"); } } as unknown as BotChain });
   await linked(links);
   await bot.handle(tap(`b:${PEPE}:0.005`));
-  assert.match(textAt(-1), /your account holds <code>0\.0007 ETH<\/code>; this buy needs <code>0\.005 ETH<\/code>\. fund it on the Sessions page/);
+  assert.match(textAt(-1), /your account holds <code>0\.0007 ETH<\/code>; this buy needs <code>0\.005 ETH<\/code>\. fund it on the Sessions page, from here or from base, arbitrum or ethereum, or buy less\./);
+  assert.deepEqual(buttons(), ["https://chit.tools/app/sessions", "https://chit.tools/app/sessions#xchain", `token:${PEPE}`], "on mainnet the way in from another chain is offered beside the Sessions page");
   assert.equal(session.calls.length, 0, "no gas spent on a buy that cannot succeed");
 });
 
