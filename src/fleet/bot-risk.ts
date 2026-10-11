@@ -80,6 +80,8 @@ export type RiskDeps = {
   /** The alert subscribers (bot-alerts.ts), told of a graduation before the group. */
   subs: Pick<AlertStore, "active">;
   launch?: LaunchInfo;
+  /** Rug shields (bot-orders.ts fireShields): their tokens are watched beside the traded ones, and an alarm fires them before anyone is told. */
+  shields?: { tokens(): Promise<Address[]>; fire(token: Address, why: string): Promise<unknown> };
   tell: (tgId: string, text: string, keyboard?: Keyboard) => Promise<void>;
   feed?: { post(text: string, keyboard: Keyboard): Promise<void> };
   botUsername: string;
@@ -123,9 +125,11 @@ export class RiskWatch {
     await step("graduations", async () => { out.graduated = await this.#graduations(from, to); });
     const pools = new Map<string, Address>();
     await step("held pools", async () => {
-      for (const t of await this.#d.held.tokens()) {
+      // The traded tokens and every token a shield stands on, each once.
+      const shielded = this.#d.shields ? await this.#d.shields.tokens().catch(() => []) : [];
+      for (const t of new Set([...(await this.#d.held.tokens()), ...shielded].map(lower))) {
         const id = await this.#d.port.poolOf(t).catch(() => undefined);
-        if (id) pools.set(id.toLowerCase(), lower(t));
+        if (id) pools.set(id.toLowerCase(), t);
       }
     });
     if (!pools.size) return out;
@@ -167,7 +171,7 @@ export class RiskWatch {
       await this.#alarm(p.token, [
         `🚨 <b>liquidity pulled from ${what}</b>: ${pct}% of what sat at the price left the pool in one transaction, sent by <code>${short(p.by)}</code> · ${tx(p.txHash)}`,
         "the price can fall fast now and a sale meets less on the other side.",
-      ]);
+      ], "liquidity pulled");
       told += 1;
     }
     return told;
@@ -192,14 +196,19 @@ export class RiskWatch {
       await this.#alarm(s.token, [
         `⚠️ <b>the ${what} dev is selling</b>: the address the launchpad names as its deployer, <code>${short(s.by)}</code>, took <code>${eth(s.ethOutWei)} ETH</code> out of the pool · ${tx(s.txHash)}`,
         "a dev selling is not always the end, but it is the first thing to know.",
-      ]);
+      ], "the dev is selling");
       told += 1;
     }
     return told;
   }
 
-  /** The accounts that traded the token and hold some now, privately and first, with the exit; then the group, with the card. */
-  async #alarm(token: Address, lines: string[]): Promise<void> {
+  /**
+   * The rug shields on the token first: they sell before anyone is told, and an account they emptied holds nothing by
+   * the time the holders are read, so it is not offered a sale it already made. Then the accounts that traded the token
+   * and hold some now, privately, with the exit; then the group, with the card.
+   */
+  async #alarm(token: Address, lines: string[], why: string): Promise<void> {
+    if (this.#d.shields) await this.#d.shields.fire(token, why).catch((e: unknown) => console.error(`bot risk: shields on ${token}: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`));
     const foot = `<i>read from the chain (the pool manager's logs), not from us. the address is <code>${token}</code>.</i>`;
     const told = new Set<string>();
     for (const account of await this.#d.held.accounts(token)) {

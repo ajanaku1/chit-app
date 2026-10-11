@@ -677,3 +677,44 @@ test("neon: an exit's share goes in and comes back", async () => {
   assert.equal(o.triggerPerEth, 800_000n);
   assert.ok(sql.calls.some((c) => c.query.includes("ADD COLUMN IF NOT EXISTS sell_pct")), "a table from before takes the column");
 });
+
+// ---------- rug shield ----------
+
+test("a rug shield is never due on price and a run never fires it; only fireShields does, once, all of the position, at the shield's floor, past the day's budget", async () => {
+  const { SHIELD_SLIPPAGE_BPS } = await import("../../src/fleet/bot-orders.js");
+  const shield = order({ id: "s", kind: "shield", ethWei: 0n, sellPct: 100 });
+  assert.deepEqual(due([shield], clock, () => 1n), [], "no price makes a shield due");
+  const { orders, links, session, telegram, runner } = exitSetup(sellReads({ perEth: 1_000_000n, held: 4_000_000n }), { dailyExecutes: 0, holders: async () => ({ ok: false, holds: 0n, need: 1n }) } as never);
+  await linked(links);
+  await orders.put(shield);
+  await orders.put(exit({ id: "tp", kind: "tp", triggerPerEth: 1n }));
+  await orders.put(order({ id: "other", kind: "shield", ethWei: 0n, sellPct: 100, token: "0x00000000000000000000000000000000000000cf" as Address }));
+  assert.deepEqual(await runner.run(), none, "the cron's pass leaves the shield alone");
+  assert.equal(session.sales.length, 0);
+  assert.deepEqual(await runner.fireShields(PEPE, "liquidity pulled"), { ...none, fired: 1, landed: 1 });
+  assert.equal(session.sales.length, 1);
+  assert.equal(session.sales[0]!.amountIn, 4_000_000n, "all of it");
+  assert.equal(session.sales[0]!.minOut, minOutFor((4_000_000n * 10n ** 18n) / 1_000_000n, SHIELD_SLIPPAGE_BPS), "floored 10% under the quote");
+  assert.equal((await orders.get("s"))!.status, "done");
+  assert.equal((await orders.get("tp"))!.status, "open", "a take profit on the same token is not a shield");
+  assert.equal((await orders.get("other"))!.status, "open", "a shield on another token is untouched");
+  assert.match(telegram.last(), /^🛡 rug shield \(liquidity pulled\): <code>4 PEPE<\/code> \(100%\) .* landed/);
+  assert.deepEqual(await runner.fireShields(PEPE, "liquidity pulled"), none, "fired once");
+  assert.equal(session.sales.length, 1);
+});
+
+test("a rug shield whose session cannot sell waits armed and says so once; a token the session can never sell turns it off", async () => {
+  const { orders, links, session, telegram, runner } = exitSetup(sellReads({ perEth: 1_000_000n }));
+  await linked(links);
+  await orders.put(order({ id: "s", kind: "shield", ethWei: 0n, sellPct: 100 }));
+  session.allow(false);
+  assert.deepEqual(await runner.fireShields(PEPE, "the dev is selling"), { ...none, waited: 1 });
+  assert.equal(session.sales.length, 0);
+  assert.match(telegram.last(), /rug shield on .*does not allow sells/);
+  assert.equal((await orders.get("s"))!.status, "open");
+  session.allow(true);
+  session.fixPermit2(true);
+  await runner.fireShields(PEPE, "the dev is selling");
+  assert.equal((await orders.get("s"))!.status, "failed");
+  assert.equal(session.sales.length, 0);
+});

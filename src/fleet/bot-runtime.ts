@@ -386,6 +386,8 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
     ...(process.env.BOT_KEY_SECRET ? { linkSecret: process.env.BOT_KEY_SECRET } : {}),
     ...(overrides.playgroundFloor ? { playgroundFloor: true } : { ...(testnetHost() ? { playgroundUrl: testnetHost()! } : {}) }),
     ...(orders ? { orders } : {}),
+    // Rug shields are fired by the watcher's risk watch: the button shows only while that clock runs.
+    ...(orders && process.env.BOT_WATCH_OFF !== "1" && process.env.BOT_RISK_OFF !== "1" ? { shields: true } : {}),
     ...(alerts ? { alerts } : {}),
     ...(dailyExecutes !== undefined ? { dailyExecutes } : {}),
     ...(dailyGasWei !== undefined ? { dailyGasWei } : {}),

@@ -325,6 +325,20 @@ Each of the last two is told once a pool or token per UTC day:
 An exit is never held back by the $CHIT holders line. `BOT_RISK_OFF=1`
 turns it off; the buys still run. `src/fleet/bot-risk.ts`.
 
+**🛡 Rug shield** on the card of a held token turns the alarm into an exit.
+One tap, after the account has agreed to selling all of the position (let it
+sell on, a token the session can sell, `canSell` at the shield's floor). It
+is an order with no level (`kind: "shield"`), listed and cancelled in
+📋 Orders, never due on price. When the risk watch raises a liquidity or dev
+alarm on its token, `fireShields` sells all of the position from the account
+before the alarm is told to anyone:
+- floored 10% under the quote, so the exit lands;
+- never held for the day's budget, though it is counted in it.
+
+It fires once. The shielded tokens are watched even when no trade record
+names them. The button shows only while the watcher's risk watch runs.
+`src/fleet/bot-orders.ts`.
+
 ## What is built, what is next
 
 Built (branch `feat/chit-bot`): the playground, end to end, buttons and
