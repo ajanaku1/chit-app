@@ -94,6 +94,9 @@ body {
 /* The live marker: a dot that pings, the way a reading that is still arriving should look. */
 .live-dot { position: relative; display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: #4bd37b; }
 .live-dot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite; }
+.live-dot.is-stale { background: #e0a64b; }
+.live-dot.is-down, .live-dot.is-reading { background: #6f6860; }
+.live-dot.is-stale::after, .live-dot.is-down::after, .live-dot.is-reading::after { animation: none; }
 @keyframes ping { 75%, 100% { transform: scale(2.6); opacity: 0; } }
 
 /* Every screen after the first opens along the seam, the way the hero tears. */

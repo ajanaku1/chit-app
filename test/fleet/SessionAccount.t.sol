@@ -8,6 +8,7 @@ import {FleetTestSink} from "../../contracts/fleet/FleetTestSink.sol";
 import {FleetSponsorProbe} from "../../contracts/fleet/FleetSponsorProbe.sol";
 import {FleetVenueToken} from "../../contracts/fleet/FleetVenueToken.sol";
 import {PoolKey} from "../../contracts/fleet/FleetPoolSeeder.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /// A Permit2 that keeps allowances the way the real one does, as far as a
 /// sale needs: `approve` records amount and expiry per (owner, token,
@@ -79,6 +80,35 @@ contract SwapRouterDouble {
     }
 
     receive() external payable {}
+}
+
+/// A token like CHOP on 4663 (2026-10-07): Permit2's allowance is fixed at
+/// infinity for every holder, any other approve to Permit2 (zero included)
+/// reverts with Solady's Permit2AllowanceIsFixedAtInfinity(), and Permit2
+/// moves it without spending an allowance.
+contract FixedPermit2Token is ERC20 {
+    address public immutable permit2;
+
+    error Permit2AllowanceIsFixedAtInfinity();
+
+    constructor(address permit2_, uint256 supply) ERC20("Fixed", "FIXED") {
+        permit2 = permit2_;
+        _mint(msg.sender, supply);
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return spender == permit2 ? type(uint256).max : super.allowance(owner, spender);
+    }
+
+    function approve(address spender, uint256 value) public override returns (bool) {
+        if (spender == permit2 && value != type(uint256).max) revert Permit2AllowanceIsFixedAtInfinity();
+        return super.approve(spender, value);
+    }
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        if (msg.sender == permit2) { _transfer(from, to, value); return true; }
+        return super.transferFrom(from, to, value);
+    }
 }
 
 /// The session account's promise, one test per clause: a key does only what
@@ -558,5 +588,53 @@ contract SessionAccountTest is Test {
         }
         assertLe(spent, cap);
         assertEq(sink.bought(address(account)), spent);
+    }
+
+    // --- a token that fixes Permit2's allowance at infinity (CHOP, 2026-10-07) ---
+
+    function _fixedToken() internal returns (FixedPermit2Token fixedToken, PoolKey memory pool) {
+        fixedToken = new FixedPermit2Token(account.PERMIT2(), 1_000_000 ether);
+        fixedToken.transfer(address(account), 1000 ether);
+        pool = PoolKey({currency0: address(0), currency1: address(fixedToken), fee: 3000, tickSpacing: 60, hooks: address(0)});
+    }
+
+    function test_a_token_with_permit2_fixed_at_infinity_sells_into_the_account() public {
+        _grantSeller(BOT);
+        (FixedPermit2Token fixedToken, PoolKey memory pool) = _fixedToken();
+        // what the old sale did first, and why it could never land
+        address permit2Address = account.PERMIT2();
+        vm.prank(address(account));
+        vm.expectRevert(FixedPermit2Token.Permit2AllowanceIsFixedAtInfinity.selector);
+        fixedToken.approve(permit2Address, 400 ether);
+        vm.expectEmit(true, true, true, true);
+        emit SessionAccount.Sold(BOT, address(fixedToken), address(router), 400 ether, 0.4 ether);
+        vm.prank(BOT);
+        account.sell(address(router), pool, 400 ether, 0.3 ether, block.timestamp + 3600);
+        assertEq(fixedToken.balanceOf(address(account)), 600 ether, "the amount sold left, and only that");
+        assertEq(address(account).balance, 1.4 ether, "the ETH landed in the account");
+        assertEq(router.seenAllowance(), 400 ether, "Permit2's allowance to the router was still the input, for this block");
+        (uint160 amount, ) = permit2.allowance(address(account), address(fixedToken), address(router));
+        assertEq(amount, 0, "and cleared after: nothing left approved to the router");
+    }
+
+    function test_a_normal_token_is_still_approved_for_the_sale_only_and_cleared() public {
+        _grantSeller(BOT);
+        _sell(BOT, 400 ether, 0.3 ether);
+        assertEq(token.allowance(address(account), account.PERMIT2()), 0, "the token's own approval to Permit2 is cleared, as before");
+        _assertNothingApproved();
+    }
+
+    function test_the_sale_calldata_carries_the_routers_per_hop_floor_as_zero_and_an_empty_hookdata() public {
+        _grantSeller(BOT);
+        _sell(BOT, 400 ether, 0.3 ether);
+        bytes memory data = router.lastCalldata();
+        bytes memory args = new bytes(data.length - 4);
+        for (uint256 i = 0; i < args.length; ++i) args[i] = data[i + 4];
+        (, bytes[] memory inputs, ) = abi.decode(args, (bytes, bytes[], uint256));
+        (, bytes[] memory params) = abi.decode(inputs[0], (bytes, bytes[]));
+        SessionAccount.ExactInputSingleParams memory swap = abi.decode(params[0], (SessionAccount.ExactInputSingleParams));
+        assertEq(swap.minHopPriceX36, 0, "the per-hop floor is off; the sale's floor is amountOutMinimum");
+        assertEq(swap.hookData.length, 0);
+        assertEq(swap.amountOutMinimum, 0.3 ether);
     }
 }

@@ -42,11 +42,11 @@ const setup = (withAlerts = true) => {
   const telegram = new RecordingTelegram();
   const bot = new SessionBot({ reads, session, links, telegram, botUsername: "usechit_bot", siteUrl: "https://chit.tools", now: () => clock, ...(withAlerts ? { alerts } : {}) });
   const buttons = (): string[] => {
-    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: { callback_data?: string; url?: string }[][] } | undefined;
+    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: { callback_data?: string; url?: string }[][] } | undefined;
     return (last?.keyboard ?? []).flat().map((b) => b.callback_data ?? b.url ?? "");
   };
   const labels = (): string[] => {
-    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: { text: string }[][] } | undefined;
+    const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: { text: string }[][] } | undefined;
     return (last?.keyboard ?? []).flat().map((b) => b.text);
   };
   return { links, alerts, telegram, bot, buttons, labels };

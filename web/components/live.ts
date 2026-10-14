@@ -9,23 +9,47 @@ export type Burn = {
 };
 export type Progress = { tasks: { done: number; total: number; percent: number }; stages: { stage: number; name: string; status: string }[]; commits: number; committedAt: string };
 
-/** Polls one of the site's own read endpoints; null until the first good answer, and the last good answer after that. */
-export function useLive<T>(url: string, everyMs = 60000) {
+/**
+ * Polls one of the site's own read endpoints: `data` is null until the first good answer and the last
+ * good answer after that; `failed` is true once a read has come back without an answer and nothing good
+ * has replaced it, so a page can say the chain did not answer instead of showing a figure it never read.
+ */
+export function useReading<T>(url: string, everyMs = 60000) {
   const [data, setData] = useState<T | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
     const read = async () => {
       try {
         const r = await fetch(url, { cache: "no-store" });
-        if (r.ok && alive) setData(await r.json());
-      } catch { /* keep the last good reading */ }
+        if (!alive) return;
+        if (r.ok) { setData(await r.json()); setFailed(false); } else setFailed(true);
+      } catch { if (alive) setFailed(true); }
     };
     read();
     const t = setInterval(read, everyMs);
     return () => { alive = false; clearInterval(t); };
   }, [url, everyMs]);
-  return data;
+  return { data, failed };
 }
+
+/** The reading alone; see useReading. */
+export function useLive<T>(url: string, everyMs = 60000) {
+  return useReading<T>(url, everyMs).data;
+}
+
+/**
+ * What a live mark says beside its label (2026-10-08). The burn page used to ship the figures of the day it was
+ * built and show them under a green dot whenever the chain did not answer, so a days-old number read as live.
+ * Now: green while the reading is fresh; amber with its age when the service served its last good reading
+ * because the RPC throttled it; grey, and no figures, while the chain is being read or did not answer at all.
+ */
+export type ReadingState = "reading" | "live" | "stale" | "down";
+export const readingState = (data: { stale?: boolean } | null, failed: boolean): ReadingState =>
+  data ? (data.stale ? "stale" : "live") : failed ? "down" : "reading";
+export const readingWords = (state: ReadingState, label: string, readAt?: number) =>
+  state === "live" ? label : state === "stale" ? `${label} · as of ${ago(readAt ?? 0)}` : state === "down" ? "The chain did not answer" : "Reading the chain…";
+
 
 /** Seconds until a unix time, ticking once a second. */
 export function useSecondsTo(at: number | undefined) {

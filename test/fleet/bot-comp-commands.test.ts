@@ -94,7 +94,7 @@ test("/competition and the 🏆 button: the three steps in order, what this user
   const comp = new MemoryCompStore();
   const links = new MemoryBotLinkStore();
   const { bot, sent, telegram } = setup({ comp, links });
-  const buttons = () => { const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: { callback_data?: string; url?: string }[][] } | undefined; return (last?.keyboard ?? []).flat().map((b) => b.callback_data ?? b.url ?? ""); };
+  const buttons = () => { const last = [...telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: { callback_data?: string; url?: string }[][] } | undefined; return (last?.keyboard ?? []).flat().map((b) => b.callback_data ?? b.url ?? ""); };
   await bot.handle(dm("/start"));
   assert.ok(buttons().includes("comp"), "the home card has the Competition button");
   await bot.handle(dm("/competition"));
@@ -113,5 +113,5 @@ test("/competition and the 🏆 button: the three steps in order, what this user
   await plain.bot.handle(dm("/competition"));
   assert.doesNotMatch(plain.sent().at(-1)!.text, /how to enter/);
   await plain.bot.handle(dm("/start"));
-  assert.ok(!(await (async () => { const last = [...plain.telegram.sent].reverse().find((o) => o.kind !== "answer") as { keyboard?: { callback_data?: string }[][] } | undefined; return (last?.keyboard ?? []).flat().some((b) => b.callback_data === "comp"); })()), "no competition, no button");
+  assert.ok(!(await (async () => { const last = [...plain.telegram.sent].reverse().find((o) => o.kind !== "answer" && o.kind !== "typing") as { keyboard?: { callback_data?: string }[][] } | undefined; return (last?.keyboard ?? []).flat().some((b) => b.callback_data === "comp"); })()), "no competition, no button");
 });

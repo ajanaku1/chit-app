@@ -1,8 +1,20 @@
 "use client";
 
-import { ago, fmtChit, fmtEth, mmss, useLive, useSecondsTo, type Burn } from "./live";
+import { ago, fmtChit, fmtEth, mmss, readingState, readingWords, useReading, useSecondsTo, wei, type Burn, type ReadingState } from "./live";
 
 const PAD = "pt-[112px] pb-[40px]";
+
+/** The dot and the words beside a live figure: green and the label when fresh, amber with its age when stale, grey with no figures otherwise. */
+export function LiveMark({ state, label, readAt, className = "text-coral" }: { state: ReadingState; label: string; readAt?: number; className?: string }) {
+  return (
+    <p className={`eyebrow flex items-center gap-2.5 ${className}`} suppressHydrationWarning>
+      <span className={`live-dot${state === "live" ? "" : ` is-${state}`}`} /> {readingWords(state, label, readAt)}
+    </p>
+  );
+}
+
+/** A figure only once the chain has answered; a dash until then, never a number typed in at build time. */
+const figure = (live: Burn | null, f: (b: Burn) => string) => (live ? f(live) : "—");
 
 /**
  * A clock face with sixty ticks. The hand is the real hour: it points at how much of the wait
@@ -63,17 +75,15 @@ function HourRing({ secs }: { secs: number | undefined }) {
 }
 
 export function BurnHero() {
-  const live = useLive<Burn>("/api/burn", 60000);
+  const { data: live, failed } = useReading<Burn>("/api/burn", 60000);
+  const state = readingState(live, failed);
   const secs = useSecondsTo(live?.nextDueAt);
-  const pct = Math.floor((live?.burnedOfMinted ?? 0.9954) * 100) / 100;
   return (
     <section id="top" data-scene="Burn" className={`scene flex bg-void ${PAD}`}>
       <div className="pointer-events-none absolute right-[-10vw] top-1/2 h-[90vh] w-[60vw] -translate-y-1/2 rounded-full bg-coral/[0.1] blur-[140px]" />
       <div className="relative mx-auto grid w-full max-w-wide grid-cols-1 items-center gap-10 px-6 md:px-10 lg:grid-cols-[1.15fr_1fr]">
         <div>
-          <p className="eyebrow mb-5 flex items-center gap-2.5 text-coral">
-            <span className="live-dot" /> The $CHIT buyback, live
-          </p>
+          <LiveMark state={state} label="The $CHIT buyback, live" readAt={live?.readAt} className="mb-5 text-coral" />
           <h1 className="display text-[clamp(52px,7vw,108px)]">
             Supply that
             <br />
@@ -83,10 +93,10 @@ export function BurnHero() {
           </h1>
           <div className="mt-10 grid max-w-[620px] grid-cols-2 gap-px overflow-hidden rounded-card border border-paper/10 bg-paper/10">
             {[
-              ["Burned", `${pct.toFixed(2)}%`, "Of the minted billion"],
-              ["CHIT burned", fmtChit(live?.burned ?? "9954674974375619552110455"), `Over ${live?.buys ?? 156} buys`],
-              ["ETH spent", fmtEth(live?.spent ?? "1030530982367212800", 3), "Every wei of it on the pool"],
-              ["Waiting to burn", `${fmtEth(live?.balance ?? "381457037632787200", 3)} ETH`, "1% of it each hour"],
+              ["Burned", figure(live, (b) => `${(Math.floor(b.burnedOfMinted * 100) / 100).toFixed(2)}%`), "Of the minted billion"],
+              ["CHIT burned", figure(live, (b) => fmtChit(b.burned)), live ? `Over ${live.buys} buys` : readingWords(state, "")],
+              ["ETH spent", figure(live, (b) => fmtEth(b.spent, 3)), "Every wei of it on the pool"],
+              ["Waiting to burn", figure(live, (b) => `${fmtEth(b.balance, 3)} ETH`), live && wei(live.balance) === 0 ? "Empty until the next top-up or fee" : "1% of it each hour"],
             ].map(([k, v, s]) => (
               <div key={k} className="bg-surface p-5">
                 <p className="eyebrow text-paper/45">{k}</p>
@@ -104,16 +114,14 @@ export function BurnHero() {
 
 /** Every call the contract answered, newest first: each row an event anyone can open on the explorer. */
 export function BurnLog() {
-  const live = useLive<Burn>("/api/burn", 60000);
+  const { data: live, failed } = useReading<Burn>("/api/burn", 60000);
   const rows = live?.events?.filter((e) => e.kind === "burned").slice(0, 8) ?? [];
   const explorer = live?.explorer ?? "https://robinhoodchain.blockscout.com";
   return (
     <section id="log" data-scene="The log" className={`scene flex bg-void ${PAD}`}>
       <div className="mx-auto grid w-full max-w-wide grid-cols-1 gap-10 px-6 md:px-10 lg:grid-cols-[1fr_1.4fr]">
         <div className="flex flex-col justify-center">
-          <p className="eyebrow mb-4 flex items-center gap-2.5 text-coral">
-            <span className="live-dot" /> Straight from the chain
-          </p>
+          <LiveMark state={readingState(live, failed)} label="Straight from the chain" readAt={live?.readAt} className="mb-4 text-coral" />
           <h2 className="display text-[clamp(44px,5.6vw,96px)]">Every burn, as it happened.</h2>
           <p className="mt-6 max-w-[42ch] text-[15px] leading-relaxed text-paper/60">
             Each row is an event the contract emitted: ETH in, $CHIT bought on the pool and burned in the same transaction.

@@ -49,7 +49,7 @@ export class AlertCards {
   homeRow(): Keyboard[number] { return [btn("🔔 Alerts", "alerts")]; }
 
   #say(chatId: string, text: string, keyboard?: Keyboard, ask?: string): Promise<void> {
-    return this.#d.telegram.deliver({ kind: "send", chatId, text, ...(keyboard ? { keyboard } : {}), ...(ask ? { ask } : {}) });
+    return this.#d.telegram.deliver({ kind: "send", chatId, text, ...(keyboard ? { keyboard } : {}), ...(ask ? { ask } : {}) }).then(() => undefined);
   }
 
   async callback(chatId: string, tgId: string, verb: string, arg: string | undefined): Promise<void> {

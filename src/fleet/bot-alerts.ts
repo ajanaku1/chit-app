@@ -1,7 +1,8 @@
 /**
  * Big-wallet alerts: when the watcher (bot-watch.ts) hands in a buy the
- * chain wrote, one message to the group for a buy over the group's line
- * and one private message to each user whose own line it clears. The
+ * chain wrote, one private message to each user whose own line it clears,
+ * then one message to the group for a buy over the group's line: the
+ * subscribers hear it first, the group after them. The
  * message says what the chain says and nothing more: who paid how much ETH
  * for which token, the hash, and the partners' lines as the token card
  * shows them. "Who" is the sender of the transaction, and the message says
@@ -123,9 +124,9 @@ export class Alerts {
   }
 
   /**
-   * One buy in: the group when it clears the group's line and the run has
-   * posts left, then each subscriber whose own line it clears and who was
-   * not told about this token in the last hour. The reads happen once, and
+   * One buy in: each subscriber whose own line it clears and who was not
+   * told about this token in the last hour, then the group when it clears
+   * the group's line and the run has posts left. The reads happen once, and
    * only when someone is to be told.
    */
   async onBuy(b: VenueBuy): Promise<{ group: boolean; told: string[] }> {
@@ -134,16 +135,6 @@ export class Alerts {
     const subs = (await this.#active()).filter((s) => s.on && b.ethInWei >= s.minEthWei);
     if (!toGroup && !subs.length) return { group: false, told: [] };
     const { text } = await this.describe(b);
-    let group = false;
-    if (toGroup) {
-      this.#groupPosts += 1;
-      try {
-        await this.#d.feed!.post(text, this.#door(b.token));
-        group = true;
-      } catch (error) {
-        console.error(`bot alerts: group post for ${b.txHash} failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
-      }
-    }
     const told: string[] = [];
     const every = this.#d.dmEveryMs ?? DEFAULT_DM_EVERY_MS;
     for (const s of subs) {
@@ -155,6 +146,17 @@ export class Alerts {
         told.push(s.tgId);
       } catch (error) {
         console.error(`bot alerts: dm to ${s.tgId} failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+      }
+    }
+    // The group after the subscribers: the people who asked for the feed are never told after the room.
+    let group = false;
+    if (toGroup) {
+      this.#groupPosts += 1;
+      try {
+        await this.#d.feed!.post(text, this.#door(b.token));
+        group = true;
+      } catch (error) {
+        console.error(`bot alerts: group post for ${b.txHash} failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
       }
     }
     return { group, told };

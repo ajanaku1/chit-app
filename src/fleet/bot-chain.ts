@@ -25,6 +25,7 @@ import { effectiveFee, quoteExactIn } from "./market.js";
 /** A quote of zero or less is no quote: never a floor for a trade (2026-10-05, a negative one reached a buy). */
 const positive = (q: bigint): bigint | null => (q > 0n ? q : null);
 import { createPoolRegistry, type DiscoveredPool } from "./pool-registry.js";
+import type { PoolStore } from "./pool-store.js";
 import type { Address, Hex } from "./types.js";
 import { PERMIT2, VENUE_POOL, encodeV4EthBuy, encodeV4TokenSell, minOutFor, sellApprovals, type PoolKey } from "./v4-swap.js";
 
@@ -119,6 +120,8 @@ export type BotChainConfig = {
   transport?: Transport;
   /** The operator's recorded pools (BOT_POOL_KEYS), beside the chain's own record (pool-registry.ts). */
   recordedPools?: PoolKey[];
+  /** Pools found once, kept for every instance (pool-store.ts). */
+  poolStore?: PoolStore;
 };
 
 const Q96 = 1n << 96n;
@@ -129,7 +132,7 @@ export const createBotChain = (config: BotChainConfig): BotChain => {
   const publicClient = createPublicClient({ chain, transport }) as unknown as PublicClient;
   const walletFor = (key: Hex): WalletClient => createWalletClient({ account: privateKeyToAccount(key), chain, transport });
   const meta = new Map<string, { symbol: string; decimals: number }>();
-  const registry = createPoolRegistry(publicClient, config.poolManager, { chainId: config.chainId, ...(config.recordedPools ? { recorded: config.recordedPools } : {}) });
+  const registry = createPoolRegistry(publicClient, config.poolManager, { chainId: config.chainId, ...(config.recordedPools ? { recorded: config.recordedPools } : {}), ...(config.poolStore ? { store: config.poolStore } : {}) });
   let faucetQueue: Promise<void> = Promise.resolve();
   /** The new-pools scan is the same for every user; one result serves a minute. */
   let poolsCache: { at: number; blocks: number; pools: NewPool[] } | undefined;

@@ -216,3 +216,10 @@ test("no route in the site fetches the site: the chain is read through the servi
     }
   }
 });
+
+test("the burn figures are never typed in: no build carries the reading of the day it was built, so an unanswered chain shows a dash, not a stale number under a live dot", { timeout: 600_000 }, async () => {
+  const all = await served(await beta());
+  for (const typedIn of ["9954674974375619552110455", "381457037632787200", "1030530982367212800"]) assert.ok(!all.includes(typedIn), `a typed-in burn figure is in the build: ${typedIn}`);
+  assert.ok(all.includes("Reading the chain"), "the reading state has words");
+  assert.ok(all.includes("The chain did not answer"), "the down state has words");
+});

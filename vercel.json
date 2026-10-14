@@ -110,6 +110,17 @@
     },
     {
       "source": "/",
+      "destination": "/app/balance",
+      "permanent": false,
+      "has": [
+        {
+          "type": "host",
+          "value": "app.chit.tools"
+        }
+      ]
+    },
+    {
+      "source": "/",
       "destination": "https://chit.tools",
       "permanent": false
     },

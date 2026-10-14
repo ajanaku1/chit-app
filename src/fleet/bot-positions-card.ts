@@ -12,7 +12,7 @@ export type PositionsView = { unit: "eth" | "usd"; usdPerEth?: number };
 export type PositionsParts = {
   ledger: PositionLedger;
   settle?: TradeSettler;
-  reads: Pick<BotChain, "tokenInfo" | "tokenBalance" | "quoteSell" | "ethBalance">;
+  reads: Pick<BotChain, "tokenInfo" | "tokenBalance" | "tokenBalanceStrict" | "quoteSell" | "ethBalance">;
   /** Every token the chain shows the account receiving, so holdings from before the record began are listed too (with no cost). */
   heldTokens?: (account: Address) => Promise<Address[]>;
 };
@@ -42,7 +42,10 @@ export const positionsCard = async (d: PositionsParts, account: Address, view: P
   const onChain = d.heldTokens ? await d.heldTokens(account).catch(() => []) : [];
   for (const token of [...trades.map((t) => t.token), ...onChain]) if (!known.has(token.toLowerCase())) { known.add(token.toLowerCase()); bases.push({ token, ethIn: 0n, unitsIn: 0n, unitsOut: 0n }); }
   const read = await Promise.all(bases.map(async (b) => {
-    const held = await d.reads.tokenBalance(b.token, account);
+    // A balance that could not be read is said as such for a token the bot bought, never shown as sold out (seen live 2026-10-09: "no positions yet" on a blip).
+    let held: bigint;
+    try { held = await (d.reads.tokenBalanceStrict ?? d.reads.tokenBalance)(b.token, account); }
+    catch { return b.unitsIn > 0n ? { info: await d.reads.tokenInfo(b.token).catch(() => ({ symbol: short(b.token), decimals: 18 })), row: positionRow(b, 0n, 0n), unread: true } : undefined; }
     if (held === 0n) return undefined;
     const [info, value] = await Promise.all([d.reads.tokenInfo(b.token), d.reads.quoteSell(b.token, held)]);
     // A token the bot never bought and cannot sell (no ETH pool, an airdrop) is not a position.
@@ -53,7 +56,8 @@ export const positionsCard = async (d: PositionsParts, account: Address, view: P
   const cash = await d.reads.ethBalance(account);
   const head = `📊 <b>your positions</b> · account <code>${short(account)}</code>`;
   if (rows.length === 0) return { text: [head, "", "no positions yet. paste a token's contract address to see its card and buy."].join("\n"), tokens: [] };
-  const lines = rows.map(({ info, row }) => {
+  const lines = rows.map(({ info, row, ...r }) => {
+    if ("unread" in r) return `<b>${info.symbol}</b> · balance not read this time, tap Refresh`;
     const pnl = row.pnl === null || row.cost === null ? "cost unknown" : `P&amp;L <code>${money(row.pnl, view, true)}</code>${pct(row.pnl, row.cost)}`;
     return `<b>${info.symbol}</b> <code>${units(row.held, info.decimals, 4)}</code> · ≈ <code>${money(row.value, view)}</code> · ${pnl}`;
   });

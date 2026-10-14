@@ -114,3 +114,37 @@ test("heldTokens: every token the chain shows the account receiving, over the wh
   assert.deepEqual((await chain.heldTokens!(ACCOUNT)).sort(), ["0x00000000000000000000000000000000000000c1", "0x00000000000000000000000000000000000000c2"]);
   assert.ok(spans.length <= 12, `a handful of queries, not ${spans.length}`);
 });
+
+// ---------- simulateSell over the real client: the chain's refusal is a verdict, an RPC that could not be asked is not (2026-10-07) ----------
+
+const SALE = { router: ROUTER, token: "0x00000000000000000000000000000000000000ce" as Address, amountIn: 1_000n, minOut: 1n, deadline: 10n ** 12n };
+
+/** A node whose eth_call fails the way `fail` says; everything else the client asks is answered plainly. */
+const callFailsWith = (fail: unknown) =>
+  createSessionChain({
+    chainId: 4663, rpcUrl: "http://fake", signerKey: KEY,
+    transport: custom({
+      async request({ method }: { method: string }) {
+        if (method === "eth_chainId") return "0x1237";
+        if (method === "eth_call") throw fail;
+        throw new Error(`unscripted rpc: ${method}`);
+      },
+    }),
+  });
+
+test("simulateSell: the account's own revert comes back as a verdict in words, from the real client", async () => {
+  const chain = callFailsWith({ code: 3, message: "execution reverted", data: "0x9475ded3" });
+  assert.deepEqual(await chain.simulateSell!(ACCOUNT, SALE), { ok: false, why: "SellNotAllowed" });
+});
+
+test("simulateSell: a revert with no data is still the chain's verdict", async () => {
+  const chain = callFailsWith({ code: -32000, message: "execution reverted" });
+  const r = await chain.simulateSell!(ACCOUNT, SALE);
+  assert.equal(r.ok, false);
+  assert.match(r.why, /revert/i);
+});
+
+test("simulateSell: an RPC that could not be asked is thrown, never a 'would fail' verdict", async () => {
+  const chain = callFailsWith(new Error("HTTP request failed"));
+  await assert.rejects(chain.simulateSell!(ACCOUNT, SALE), (e: Error) => !/would fail/.test(e.message), "the error surfaces so the bot treats it as no simulation at all");
+});

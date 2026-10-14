@@ -93,6 +93,17 @@ balance: 0.02 ETH
   the card says so on the testnet playground. `BOT_BRIDGE_OFF=1` hides it.
 - **Deep links**: `t.me/<bot>?start=t-<contract>` opens that token's card,
   for a partner's "trade in chit bot" button or a group's pinned message.
+  Someone not yet linked sees the card without buy buttons and a Connect
+  button, and lands on the same card the first time they open the bot
+  linked. `t-<contract>-<code>` does the same and notes the referral code
+  (at most 8 characters; Telegram allows 64 in `start`) so that referrals
+  made during the beta count from the first day of fees. **📣 Share link**,
+  after a landed buy and on the card of any token held, writes the person's
+  own link in a code block (tap to copy): the code is the first 8 of an HMAC
+  of their Telegram id under `BOT_KEY_SECRET`, so it is theirs and stable
+  and is not their id; the referral store is told the code was issued
+  (`referrals.issued`, optional) so an arrival through it can be matched.
+  Without the secret the button writes the plain `t-<contract>` door.
 - **Share** (📸 on Positions): the position as a picture, the kind people
   post when a trade went their way: the symbol, the change as one big
   number, what was paid and what the pool would fill right now, and the
@@ -173,7 +184,17 @@ quote sets the floor (for a limit, the level itself when that is higher, so
 a fill never lands under the price you named; a pool too thin to give it
 waits), the bot's key signs, the account pays. A refusal (a paused session,
 over a cap) leaves the order open with the reason on it and tells you;
-three in a row switch it off. **Orders** on the home card lists what is
+three in a row switch it off. Over a position the card adds **Take
+profit** and **Stop loss**: a move from the price now and a share of what
+you hold (`+50% sell 100%`, `-20% sell 50%`), stored as the level in tokens
+per ETH. When the pool reaches it, the share of what the account holds then
+is sold as the one `sell` a tapped Sell is, only while let it sell is on
+(off, the order waits and says so once). A take profit fills at its level
+or better, the level being its floor; a stop loss is a way out, floored at
+the sell slippage only. Neither asks the $CHIT holders line, each fires
+once and closes, and a token the session can never sell (Permit2 fixed at
+infinity) or a position already gone turns the order off with the reason.
+**Orders** on the home card lists what is
 open, a cancel under each; a cancel is one statement in the store and a run
 mid-send cannot write over it. Money moves at most once per slot: the run
 claims an order before the send, the claim names the DCA slot it is for (so
@@ -187,6 +208,16 @@ has, and an account keeps at most ten orders open, so a cron gone wrong or
 one owner cannot drain the signer's gas. Orders carry the chain they were
 placed on; `BOT_ORDERS_OFF=1` stops the cron with the buttons.
 `src/fleet/bot-orders.ts`.
+
+The same cron watches each linked session's end. A session for the bot's
+key that ends within three days gets one message, and one that has ended
+gets one more, each with **🔑 Renew**. A session can't be extended (the
+account never grants a key twice and has no way to move an expiry), so
+Renew is the bot's own Connect: a fresh link at the moment it is tapped,
+the Sessions page opening with the key and the caps filled in for a new
+account on the same wallet. Each message goes once per stage per expiry
+(`bot_expiry_notes`); a session revoked, never granted, or lapsed more than
+a week ago says nothing. `src/fleet/bot-expiry.ts`.
 
 Leaders ride on the same session too, two ways. **⭐ Become a leader → from
 my session account** opens your tapped buys to followers: when one lands,
@@ -269,9 +300,30 @@ them, "unknown" where a partner has no read (never a missing line, which
 would read as clean), "read from the chain, not from us", and a "buy this"
 door into the bot by the token. Bounds: twenty group posts a pass and no
 more, one private message per user per token an hour, claimed in the store
-in one statement so two passes tell nobody twice. `BOT_WATCH_OFF=1` stops
-the cron and hides the button.
+in one statement so two passes tell nobody twice. The subscribers are told
+before the group: the people who asked for the feed never hear it after
+the room. `BOT_WATCH_OFF=1` stops the cron and hides the button.
 `src/fleet/bot-alerts.ts`, `src/fleet/bot-alert-cards.ts`.
+
+The same window goes on to the risk watch, three events read from the
+chain's own logs:
+- **A graduation.** A launchpad token (`BOT_LAUNCHPAD_FACTORY`) whose curve
+  is done gets its Uniswap pool. It is told once ever, to the subscribers
+  and then the group, with the card's door.
+- **Liquidity pulled.** Half or more of the liquidity that sits at the
+  price leaves the pool of a token the bot's users traded in the last
+  thirty days, in one transaction.
+- **The dev selling.** The address the launchpad names as a token's
+  deployer takes 0.05 ETH or more out of its pool.
+
+Each of the last two is told once a pool or token per UTC day:
+- first, privately, to every linked account that traded the token and
+  still holds some, with **🚪 Sell 100%** (the bot's own sell from the
+  account) and the card;
+- then to the group, with the card only.
+
+An exit is never held back by the $CHIT holders line. `BOT_RISK_OFF=1`
+turns it off; the buys still run. `src/fleet/bot-risk.ts`.
 
 ## What is built, what is next
 

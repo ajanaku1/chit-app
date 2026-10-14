@@ -41,4 +41,15 @@ describe("the front door of each host", () => {
     assert.ok((first.has ?? []).some((h) => h.type === "host" && h.value === PLAYGROUND), `the first root rule is not the playground's: ${JSON.stringify(first)}`);
     assert.ok(first.destination.startsWith("/"), `the playground's root leaves its own host: ${first.destination}`);
   });
+
+  // 2026-10-08: app.chit.tools's root sent people to the marketing site, so every shared link to the beta bounced (R13).
+  it("the beta's own root stays on the beta, on the balance page, and comes before the rule that leaves for chit.tools", async () => {
+    const config = JSON.parse(await readFile(join(process.cwd(), "vercel.json"), "utf8")) as { redirects?: Redirect[] };
+    const roots = (config.redirects ?? []).filter((r) => r.source === "/");
+    const beta = roots.findIndex((r) => (r.has ?? []).some((h) => h.type === "host" && h.value === "app.chit.tools"));
+    assert.ok(beta !== -1, "no root rule names app.chit.tools");
+    assert.equal(roots[beta]!.destination, "/app/balance");
+    const toSite = roots.findIndex((r) => r.destination.startsWith(BETA));
+    assert.ok(toSite === -1 || beta < toSite, "the beta's root falls through to the marketing site");
+  });
 });

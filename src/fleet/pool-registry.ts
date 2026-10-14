@@ -37,6 +37,7 @@
  */
 
 import { encodeAbiParameters, getAddress, isAddress, keccak256, parseAbi, parseAbiItem, type PublicClient } from "viem";
+import type { PoolStore } from "./pool-store.js";
 
 import { decodeSlot0, liquiditySlot, slot0Slot } from "./market.js";
 import type { Address, Hex } from "./types.js";
@@ -127,6 +128,8 @@ export type PoolRegistryOptions = {
   recorded?: readonly PoolKey[];
   /** Limits a pieced scan to the last this many blocks; absent, the whole chain. */
   scanBlocks?: bigint;
+  /** Pools found by any instance, kept by chain and token (pool-store.ts): read before a scan, written after one that found a pool. */
+  store?: PoolStore;
 };
 
 export const createPoolRegistry = (publicClient: PublicClient, poolManager: Address, options: PoolRegistryOptions = {}): PoolRegistry => {
@@ -224,10 +227,16 @@ export const createPoolRegistry = (publicClient: PublicClient, poolManager: Addr
         const live = await state(recorded);
         pool = live.sqrtPriceX96 > 0n && live.liquidity > 0n ? { key: recorded, id: poolIdOf(recorded), ...live, hooked: recorded.hooks.toLowerCase() !== VENUE_POOL.hooks, onRecord: true } : null;
       } else {
-        // Every candidate before any choice: the chain's openings and the common keys, one entry per id.
-        const keys = new Map<string, PoolKey>();
-        for (const key of [...(await candidatesFromLogs(token)), ...COMMON_KEYS.map((c) => ({ currency0: NATIVE_ETH, currency1: token, ...c }))]) keys.set(poolIdOf(key), key);
-        pool = await deepest([...keys.values()]);
+        // A pool another instance found is read first, and is the answer while it is live; dry, it is looked for again.
+        const kept = options.chainId !== undefined ? await options.store?.get(options.chainId, token).catch(() => undefined) : undefined;
+        pool = kept ? await deepest([kept]) : null;
+        if (!pool) {
+          // Every candidate before any choice: the chain's openings and the common keys, one entry per id.
+          const keys = new Map<string, PoolKey>();
+          for (const key of [...(await candidatesFromLogs(token)), ...COMMON_KEYS.map((c) => ({ currency0: NATIVE_ETH, currency1: token, ...c }))]) keys.set(poolIdOf(key), key);
+          pool = await deepest([...keys.values()]);
+          if (pool && options.chainId !== undefined) await options.store?.put(options.chainId, token, pool.key).catch(() => undefined);
+        }
       }
       cache.set(k, { at: Date.now(), pool });
       return pool;

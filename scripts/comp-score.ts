@@ -8,7 +8,7 @@
  *   DATABASE_URL=… npm run comp-score -- [--exclude <tg id>,<tg id>] \
  *     [--start 2026-10-02T12:00:00Z --end 2026-10-09T12:00:00Z] [--min 0.0005] [--trades 5]
  *
- * Without dates it scores the first competition (FIRST_COMPETITION).
+ * Without dates it scores the first competition as extended (FIRST_COMPETITION_EXTENDED).
  *
  * Prints both boards by nickname, then the awards with each winner's
  * Telegram id, to message them in the bot. Never a wallet on the boards.
@@ -23,7 +23,7 @@ import { NeonCompStore } from "../src/fleet/bot-comp.js";
 import { NeonBotLinkStore } from "../src/fleet/bot-link.js";
 import { NeonPositionLedger, settleTrades } from "../src/fleet/bot-positions.js";
 import { createSessionChain } from "../src/fleet/bot-session-chain.js";
-import { FIRST_COMPETITION, scoreCompetition, type Entrant, type Holding } from "../src/fleet/comp-score.js";
+import { FIRST_COMPETITION_EXTENDED, scoreCompetition, type Entrant, type Holding } from "../src/fleet/comp-score.js";
 import { recordedPoolsFromEnv } from "../src/fleet/pool-registry.js";
 import type { Address } from "../src/fleet/types.js";
 
@@ -37,7 +37,7 @@ const arg = (name: string): string | undefined => { const i = process.argv.index
 const date = (name: string, fallback: Date): Date => { const raw = arg(name); if (!raw) return fallback; const d = new Date(raw); return Number.isNaN(d.getTime()) ? fail(`--${name} must be a date, like 2026-10-05T00:00:00Z`) : d; };
 
 const url = process.env.DATABASE_URL ?? fail("DATABASE_URL is not set");
-const rules = { start: date("start", FIRST_COMPETITION.start), end: date("end", FIRST_COMPETITION.end), minWei: arg("min") ? parseEther(arg("min")!) : FIRST_COMPETITION.minWei, minTrades: Number(arg("trades") ?? FIRST_COMPETITION.minTrades) };
+const rules = { start: date("start", FIRST_COMPETITION_EXTENDED.start), end: date("end", FIRST_COMPETITION_EXTENDED.end), minWei: arg("min") ? parseEther(arg("min")!) : FIRST_COMPETITION_EXTENDED.minWei, minTrades: Number(arg("trades") ?? FIRST_COMPETITION_EXTENDED.minTrades) };
 const excluded = new Set((arg("exclude") ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 
 const sql = neon(url);

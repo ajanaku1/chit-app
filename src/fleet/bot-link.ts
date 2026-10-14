@@ -40,6 +40,8 @@ export interface BotLinkStore {
   getLink(tgId: string): Promise<BotLink | undefined>;
   /** Every Telegram id linked to this account, for the "which telegram" question. */
   linksTo(account: Address): Promise<BotLink[]>;
+  /** Every link on this chain, for the session-expiry pass (bot-expiry.ts). */
+  linksOn(chainId: number): Promise<BotLink[]>;
 }
 
 /** The exact text the owner's wallet signs. The chain id is in it so a testnet link never opens a mainnet account. */
@@ -109,6 +111,7 @@ export class MemoryBotLinkStore implements BotLinkStore {
   async putLink(link: BotLink) { this.links.set(link.tgId, { ...link }); }
   async getLink(tgId: string) { const l = this.links.get(tgId); return l ? { ...l } : undefined; }
   async linksTo(account: Address) { const a = getAddress(account); return [...this.links.values()].filter((l) => l.account === a).map((l) => ({ ...l })); }
+  async linksOn(chainId: number) { return [...this.links.values()].filter((l) => l.chainId === chainId).map((l) => ({ ...l })); }
 }
 
 type Row = Record<string, unknown>;
@@ -162,5 +165,9 @@ export class NeonBotLinkStore implements BotLinkStore {
   async linksTo(account: Address) {
     await this.#init();
     return (await this.sql.query(`SELECT * FROM bot_links WHERE account = $1`, [getAddress(account)])).map(rowLink);
+  }
+  async linksOn(chainId: number) {
+    await this.#init();
+    return (await this.sql.query(`SELECT * FROM bot_links WHERE chain_id = $1`, [chainId])).map(rowLink);
   }
 }

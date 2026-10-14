@@ -14,7 +14,7 @@ import { NeonBotLinkStore } from "./bot-link.js";
 import { NeonPositionLedger } from "./bot-positions.js";
 import { createSessionChain } from "./bot-session-chain.js";
 import { buildBoard, type Board, type BoardDeps } from "./comp-board.js";
-import { FIRST_COMPETITION } from "./comp-score.js";
+import { FIRST_COMPETITION_EXTENDED } from "./comp-score.js";
 import { recordedPoolsFromEnv } from "./pool-registry.js";
 import type { Address } from "./types.js";
 
@@ -35,7 +35,7 @@ const depsFromEnv = (): BoardDeps => {
   const reads = createBotChain({ chainId: CHAIN_ID, rpcUrl, defaultToken: ROUTER, router: ROUTER, poolManager: POOL_MANAGER, recordedPools: recordedPoolsFromEnv(refuse) });
   const settle = createSessionChain({ chainId: CHAIN_ID, rpcUrl, signerKey: generatePrivateKey() }).settle ?? refuse("the session chain reads no receipts");
   const excluded = new Set((process.env.COMP_EXCLUDE_TG_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
-  return { entries: new NeonCompStore(port), links: new NeonBotLinkStore(port), ledger: new NeonPositionLedger(port), settle, reads, rules: FIRST_COMPETITION, excluded };
+  return { entries: new NeonCompStore(port), links: new NeonBotLinkStore(port), ledger: new NeonPositionLedger(port), settle, reads, rules: FIRST_COMPETITION_EXTENDED, excluded };
 };
 
 const json = (body: unknown, status: number, maxAge = 0): Response =>
