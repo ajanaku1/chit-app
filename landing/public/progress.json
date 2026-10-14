@@ -1,13 +1,13 @@
 {
   "rule": "PROGRESS.md",
-  "generatedAt": "2026-09-28T14:30:26.862Z",
-  "commit": "109fdae",
-  "committedAt": "2026-09-28T15:22:54+01:00",
-  "commits": 769,
+  "generatedAt": "2026-10-14T08:19:28.866Z",
+  "commit": "be5424e",
+  "committedAt": "2026-10-11T12:05:53+03:00",
+  "commits": 890,
   "tasks": {
-    "done": 174,
-    "total": 176,
-    "percent": 98
+    "done": 0,
+    "total": 14,
+    "percent": 0
   },
   "stages": [
     {
@@ -30,123 +30,25 @@
     {
       "id": "001-fleet-mission",
       "title": "Fleet Mission",
-      "done": 41,
-      "total": 41,
-      "phases": [
-        {
-          "name": "Evidence and harness",
-          "done": 8,
-          "total": 8
-        },
-        {
-          "name": "Foundational controls",
-          "done": 8,
-          "total": 8
-        },
-        {
-          "name": "US1 creation",
-          "done": 8,
-          "total": 8
-        },
-        {
-          "name": "US2 bounded buy",
-          "done": 8,
-          "total": 8
-        },
-        {
-          "name": "US3 lifecycle",
-          "done": 5,
-          "total": 5
-        },
-        {
-          "name": "Acceptance",
-          "done": 4,
-          "total": 4
-        }
-      ],
+      "done": 0,
+      "total": 0,
+      "phases": [],
       "open": []
     },
     {
       "id": "002-private-funding-pool",
       "title": "Private Funding Pool",
-      "done": 40,
-      "total": 40,
-      "phases": [
-        {
-          "name": "Setup",
-          "done": 3,
-          "total": 3
-        },
-        {
-          "name": "Foundational",
-          "done": 9,
-          "total": 9
-        },
-        {
-          "name": "User Story 1 — Hold a Chit balance",
-          "done": 7,
-          "total": 7
-        },
-        {
-          "name": "User Story 2 — Fund a fleet from the balance and trade",
-          "done": 8,
-          "total": 8
-        },
-        {
-          "name": "User Story 3 — Control and get money back privately",
-          "done": 6,
-          "total": 6
-        },
-        {
-          "name": "Polish and cross-cutting",
-          "done": 7,
-          "total": 7
-        }
-      ],
+      "done": 0,
+      "total": 0,
+      "phases": [],
       "open": []
     },
     {
       "id": "003-mainnet-beta",
       "title": "The capped mainnet beta on Robinhood Chain",
-      "done": 93,
-      "total": 95,
-      "phases": [
-        {
-          "name": "Setup",
-          "done": 6,
-          "total": 6
-        },
-        {
-          "name": "Foundational",
-          "done": 47,
-          "total": 47
-        },
-        {
-          "name": "US1 — Put real money in and take it out",
-          "done": 8,
-          "total": 8
-        },
-        {
-          "name": "US2 — Trade a listed token",
-          "done": 16,
-          "total": 16
-        },
-        {
-          "name": "US3 — Told the truth when Chit cannot pay",
-          "done": 3,
-          "total": 3
-        },
-        {
-          "name": "US4 — Keep the free playground",
-          "done": 2,
-          "total": 3
-        },
-        {
-          "name": "Launch",
-          "done": 11,
-          "total": 12
-        }
-      ],
+      "done": 0,
+      "total": 0,
+      "phases": [],
       "open": [
         {
           "id": "T082",
@@ -155,6 +57,102 @@
         {
           "id": "T094",
           "text": "[F] Deploy with a guardian and open the beta"
+        }
+      ]
+    },
+    {
+      "id": "005-multichain-trading",
+      "title": "Trade on any chain, burn one token",
+      "done": 0,
+      "total": 14,
+      "phases": [
+        {
+          "name": "One chain list, no change",
+          "done": 0,
+          "total": 3
+        },
+        {
+          "name": "One account address on every chain",
+          "done": 0,
+          "total": 4
+        },
+        {
+          "name": "Paste a token, trade it where it lives",
+          "done": 0,
+          "total": 2
+        },
+        {
+          "name": "Orders, alerts and positions on every chain",
+          "done": 0,
+          "total": 2
+        },
+        {
+          "name": "Fees home, holders everywhere",
+          "done": 0,
+          "total": 2
+        },
+        {
+          "name": "Ship",
+          "done": 0,
+          "total": 1
+        }
+      ],
+      "open": [
+        {
+          "id": "T001",
+          "text": "[L] Chain config"
+        },
+        {
+          "id": "T002",
+          "text": "[L] Build reads, session chain, order runner, watcher and risk watch per enabled chain from that list; with `BOT_CHAINS=4663` the full bot suite passes unchanged"
+        },
+        {
+          "id": "T003",
+          "text": "[L] Swap encoding chosen by chain: the 4663 variant with `minHopPriceX36`, the standard v4 one elsewhere, each pinned by a test"
+        },
+        {
+          "id": "T004",
+          "text": "[L] Verify the Base addresses"
+        },
+        {
+          "id": "T005",
+          "text": "[L] Session factory on a Base fork through the deterministic deployer; account n has the same address as on 4663"
+        },
+        {
+          "id": "T006",
+          "text": "[L] Sessions page chain picker: every read, button and transaction follows the picked chain, named in words"
+        },
+        {
+          "id": "T007",
+          "text": "[L] Links per"
+        },
+        {
+          "id": "T008",
+          "text": "[L] Resolve a pasted address or one-tap link to its chain by code and symbol; two matches ask, Robinhood Chain first"
+        },
+        {
+          "id": "T009",
+          "text": "[L] Base buys and sells on a fork through the bot, every card and line naming its chain"
+        },
+        {
+          "id": "T010",
+          "text": "[L] Order runner per chain; a Base stop loss fires once at its level in a Base fork test"
+        },
+        {
+          "id": "T011",
+          "text": "[L] Watcher and risk watch for Base; positions across chains in one card"
+        },
+        {
+          "id": "T012",
+          "text": "[L] Fee accrual on Base and the sweep home through Relay to the 4663 buyback, quote checked against the ask; a failed sweep leaves the ETH where it was"
+        },
+        {
+          "id": "T013",
+          "text": "[L] Holders line and holder discount read $CHIT on 4663 only"
+        },
+        {
+          "id": "T014",
+          "text": "[B] Deploy the factory on Base, then the bot with `BOT_CHAINS=4663,8453`, after the gates"
         }
       ]
     }
