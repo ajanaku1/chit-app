@@ -134,3 +134,29 @@ test("neon: an alarm is claimed in one insert that does nothing on a key already
   assert.equal(await store.claim("liq|4663|0xpool|2026-10-08", clock), false);
   assert.ok(calls.some((q) => /INSERT INTO bot_risk_told .* ON CONFLICT \(key\) DO NOTHING RETURNING key/.test(q)));
 });
+
+test("rug shields: their tokens are watched even when no trade record names them, and an alarm fires them before any holder or the group is told", async () => {
+  const order: string[] = [];
+  const links = new MemoryBotLinkStore();
+  await links.putLink({ tgId: "7", account: getAddress(ACCOUNT), owner: DEV, chainId: 4663, nonce: "n", signature: "0x00", linkedAt: clock.toISOString() });
+  const fired: { token: string; why: string }[] = [];
+  const risk = new RiskWatch({
+    port: {
+      async opened() { return []; },
+      async poolOf(t) { return t.toLowerCase() === TOKEN ? POOL : undefined; },
+      async pulls(_f, _t, pools) { return pools.has(POOL.toLowerCase()) ? [pull(80n, 20n)] : []; },
+      async sales() { return []; },
+    },
+    store: new MemoryRiskStore(), chainId: 4663, links, subs: new MemoryAlertStore(),
+    reads: { async tokenInfo() { return { symbol: "PEPE" }; }, async tokenBalance() { return 5n; } } as unknown as BotChain,
+    held: { async tokens() { return []; }, async accounts() { return [ACCOUNT]; } },
+    shields: { async tokens() { return [TOKEN]; }, async fire(token, why) { order.push("shield"); fired.push({ token, why }); } },
+    tell: async (tgId) => { order.push(tgId); },
+    feed: { post: async () => { order.push("group"); } },
+    botUsername: "usechit_bot",
+    now: () => clock,
+  });
+  assert.deepEqual(await risk.run(10n, 20n), { graduated: 0, pulled: 1, devSold: 0 }, "the shielded token's pool was watched");
+  assert.deepEqual(fired, [{ token: TOKEN, why: "liquidity pulled" }]);
+  assert.deepEqual(order, ["shield", "7", "group"], "the shield sells first, then the holder, then the group");
+});

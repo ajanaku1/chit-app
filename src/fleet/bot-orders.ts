@@ -60,6 +60,12 @@
  * stop loss is a way out, so its floor is the sell slippage only. Neither
  * asks the $CHIT holders line: a sale is never held back by it. Each fires
  * once and closes, with the same claim, cut-off and settle rules as a limit.
+ *
+ * A rug shield is a stop with no level: it is never due on price. The risk
+ * watch (bot-risk.ts) fires it, through `fireShields`, the moment it raises
+ * an alarm on the token (liquidity pulled, the dev selling), before the
+ * alarm is told to anyone: all of the position, from the account, floored
+ * at SHIELD_SLIPPAGE_BPS under the quote, never held for the day's budget.
  */
 
 import type { HoldersGate } from "./bot-holders.js";
@@ -74,7 +80,8 @@ import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor, venuePool
 import { executeGasWei, sellGasWei } from "./bot-gas.js";
 
 /** limit and dca buy; tp (take profit) and sl (stop loss) sell a share of the position. */
-export type OrderKind = "limit" | "dca" | "tp" | "sl";
+/** shield (rug shield) sells all of a position when the risk watch raises an alarm on its token; it has no price level. */
+export type OrderKind = "limit" | "dca" | "tp" | "sl" | "shield";
 export type OrderStatus = "open" | "done" | "cancelled" | "failed";
 
 export type Order = {
@@ -150,6 +157,8 @@ const DEFAULT_RUN_BUDGET_MS = 200_000;
 export const due = (orders: readonly Order[], now: Date, perEthOf: (token: Address) => bigint | undefined): Order[] =>
   orders.filter((o) => {
     if (o.status !== "open" || o.firingAt) return false;
+    // A rug shield is never due by price: only an alarm fires it (fireShields).
+    if (o.kind === "shield") return false;
     if (o.kind !== "dca") {
       const perEth = perEthOf(o.token);
       return o.triggerPerEth !== undefined && perEth !== undefined && atLevel(o, perEth);
@@ -208,9 +217,11 @@ const eth = (wei: bigint): string => {
   return `${w}${f ? "." + f : ""}`;
 };
 const short = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
-const LABELS: Record<OrderKind, string> = { limit: "limit buy", dca: "dca", tp: "take profit", sl: "stop loss" };
+const LABELS: Record<OrderKind, string> = { limit: "limit buy", dca: "dca", tp: "take profit", sl: "stop loss", shield: "🛡 rug shield" };
 const label = (o: Order): string => LABELS[o.kind];
-const isSell = (o: Order): boolean => o.kind === "tp" || o.kind === "sl";
+const isSell = (o: Order): boolean => o.kind === "tp" || o.kind === "sl" || o.kind === "shield";
+/** A rug shield is an exit while the pool is being emptied: it takes a wider floor than a tapped Sell, so the sale lands rather than waits. */
+export const SHIELD_SLIPPAGE_BPS = 1_000;
 const units = (v: bigint, decimals: number): string => {
   const base = 10n ** BigInt(decimals), f = (v % base).toString().padStart(decimals, "0").slice(0, 4).replace(/0+$/, "");
   return `${v / base}${f ? "." + f : ""}`;
@@ -249,6 +260,28 @@ export class OrderRunner {
       report.fired += 1;
       if (outcome === "refused") report.refused += 1;
       else { executes += 1; if (outcome === "landed") report.landed += 1; }
+    }
+    return report;
+  }
+
+  /**
+   * The risk watch raised an alarm on a token (bot-risk.ts): every open rug shield on it, on this chain, sells all of
+   * its position now, as one `sell` each, before the alarm is told to anyone. The same claim, settle and cut-off rules
+   * as any order, so a shield fires once; no level, no daily budget, no holders line, since an exit is never held back.
+   */
+  async fireShields(token: Address, why: string, now: Date = this.#now): Promise<RunReport> {
+    const report: RunReport = { fired: 0, landed: 0, refused: 0, waited: 0 };
+    const shields = (await this.#d.orders.open(this.#chainId)).filter((o) => o.kind === "shield" && !o.firingAt && o.token.toLowerCase() === token.toLowerCase());
+    for (const o of shields) {
+      const link = await this.#d.links.getLink(o.tgId);
+      const outcome = !link || link.account.toLowerCase() !== o.account.toLowerCase() || link.chainId !== o.chainId
+        ? await this.#refuse(o, now, "your telegram is no longer linked to the account this shield was set from")
+        : await this.#fireSell(o, now, new Map(), why);
+      if (outcome === "skipped") continue;
+      if (outcome === "waited") { report.waited += 1; continue; }
+      report.fired += 1;
+      if (outcome === "refused") report.refused += 1;
+      else if (outcome === "landed") report.landed += 1;
     }
     return report;
   }
@@ -358,7 +391,8 @@ export class OrderRunner {
    * session can never sell, the position, the level on this fresh read, the quote, the day's budget, the contract's own
    * answer, then the sale as an eth_call. Only then the claim, and the one transaction.
    */
-  async #fireSell(o: Order, now: Date, budgets: Map<string, Budget>): Promise<Outcome> {
+  async #fireSell(o: Order, now: Date, budgets: Map<string, Budget>, why?: string): Promise<Outcome> {
+    const shield = o.kind === "shield";
     const allowed = await Promise.resolve().then(() => this.#d.session.sellAllowed(o.account)).catch(() => undefined);
     if (allowed === undefined) return "skipped";
     if (!allowed) return this.#wait(o, now, "your session does not allow sells; turn on let it sell next to the bot's key on the Sessions page and the order fires at the next check while the price is still there");
@@ -369,19 +403,20 @@ export class OrderRunner {
     const amount = (held * BigInt(o.sellPct ?? 100)) / 100n;
     if (amount === 0n) return this.#off(o, `your account holds no ${esc(info.symbol)} any more, so there is nothing to sell`);
     // The level is checked again on this read, not the run's: a price that slipped back is simply not due.
-    if (!atLevel(o, info.perEth)) return "skipped";
+    if (!shield && !atLevel(o, info.perEth)) return "skipped";
     const quote = await this.#d.reads.quoteSell(o.token, amount);
     if (quote === null) return this.#refuse(o, now, "no quote from the pool right now");
-    let minOut = minOutFor(quote, this.#d.sellSlippageBps ?? 300);
+    let minOut = minOutFor(quote, shield ? SHIELD_SLIPPAGE_BPS : this.#d.sellSlippageBps ?? 300);
     if (o.kind === "tp") {
       // A take profit fills at its level or better, as a limit buy does: the fee and the depth can put the sale under it, and then it waits.
       const floor = levelEthOut(o, amount);
       if (quote < floor) return this.#wait(o, now, `the pool returns less than your level for ${units(amount, info.decimals)} ${esc(info.symbol)} once the fee and the depth are in; the order waits for the price to move`);
       minOut = max(minOut, floor);
     }
+    // A shield's exit is never held for the day's budget; it is still counted in it, so the next taps see it.
     const budget = await this.#budget(o.tgId, now, budgets);
-    if (budget.executes >= (this.#d.dailyExecutes ?? DAILY_DEFAULTS.executes)) return this.#wait(o, now, `that is ${this.#d.dailyExecutes ?? DAILY_DEFAULTS.executes} trades today from this account; the order waits for tomorrow`);
-    if (budget.gasWei >= (this.#d.dailyGasWei ?? DAILY_DEFAULTS.gasWei)) return this.#wait(o, now, "the bot has fronted its daily gas for this account; the order waits for tomorrow");
+    if (!shield && budget.executes >= (this.#d.dailyExecutes ?? DAILY_DEFAULTS.executes)) return this.#wait(o, now, `that is ${this.#d.dailyExecutes ?? DAILY_DEFAULTS.executes} trades today from this account; the order waits for tomorrow`);
+    if (!shield && budget.gasWei >= (this.#d.dailyGasWei ?? DAILY_DEFAULTS.gasWei)) return this.#wait(o, now, "the bot has fronted its daily gas for this account; the order waits for tomorrow");
     const deadline = BigInt(Math.floor(now.getTime() / 1000) + 3600);
     const poolKey = info.poolKey ?? venuePoolKey(o.token);
     // The contract's own answer first: a paused, expired or revoked session, the flag gone, all refused here, before any gas, in its words.
@@ -405,7 +440,7 @@ export class OrderRunner {
     delete next.lastError;
     delete next.firingAt;
     const explorer = `https://robinhoodchain.blockscout.com/tx/${r.hash}`;
-    const head = `${label(o)}: <code>${units(amount, info.decimals)} ${esc(info.symbol)}</code> (${o.sellPct ?? 100}%) for about <code>${eth(quote)} ETH</code>, floor <code>${eth(minOut)}</code>`;
+    const head = `${label(o)}${why ? ` (${esc(why)})` : ""}: <code>${units(amount, info.decimals)} ${esc(info.symbol)}</code> (${o.sellPct ?? 100}%) for about <code>${eth(quote)} ETH</code>, floor <code>${eth(minOut)}</code>`;
     if (!(await this.#d.orders.settle(next))) {
       await this.#tell(o.tgId, `${head} went out, <a href="${explorer}">${short(r.hash)}</a>, and the order was cancelled while it was in flight; nothing more is sent.`);
       return r.landed ? "landed" : "sent";

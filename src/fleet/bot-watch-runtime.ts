@@ -99,7 +99,8 @@ import { Alerts, MemoryAlertStore, NeonAlertStore, type AlertStore } from "./bot
 import { CHIT_MAINNET } from "./bot-bridge.js";
 import { createBotChain, type BotChain } from "./bot-chain.js";
 import type { CopyStore } from "./bot-copy.js";
-import { createCopyDesk, dailyLimitsFromEnv, groupChatIdFromEnv } from "./bot-copy-runtime.js";
+import { createCopyDesk, dailyLimitsFromEnv, groupChatIdFromEnv, positionLedgerFromEnv } from "./bot-copy-runtime.js";
+import { NeonOrderStore, OrderRunner, type OrderStore } from "./bot-orders.js";
 import { createHeyScanner } from "./bot-hey.js";
 import { MemoryBotLinkStore, NeonBotLinkStore, type BotLinkStore } from "./bot-link.js";
 import { createOrusScanner, type OrusScanner } from "./bot-orus.js";
@@ -152,7 +153,7 @@ export const readInTurn = (readers: Reader[]) => async (b: VenueBuy): Promise<vo
 };
 
 /** For tests: the parts a pass would otherwise build from the environment and the chain; orus from outside stands in for the partner (the readers gate on its answer). */
-export type WatchRuntimeOverrides = { port?: WatchPort; store?: WatchStore; alertStore?: AlertStore; copyStore?: CopyStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: BotChain; orus?: OrusScanner; riskPort?: RiskPort; riskStore?: RiskStore; held?: RiskDeps["held"]; launch?: LaunchInfo };
+export type WatchRuntimeOverrides = { port?: WatchPort; store?: WatchStore; alertStore?: AlertStore; copyStore?: CopyStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: BotChain; orus?: OrusScanner; riskPort?: RiskPort; riskStore?: RiskStore; held?: RiskDeps["held"]; launch?: LaunchInfo; orders?: OrderStore };
 
 type Sql = { query(q: string, p?: unknown[]): Promise<readonly Record<string, unknown>[]> };
 /** What the bot's users hold, from the trade record (bot-positions.ts): the tokens traded in the last thirty days, and who traded one. */
@@ -215,11 +216,12 @@ const build = () => {
     ...(groupChatId ? { feed: { chatId: groupChatId, post: (text, keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }).then(() => undefined) } } : {}),
     ...(groupMin ? { groupMinWei: parseEther(groupMin) } : {}),
   });
+  const session = overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as Hex });
   // The copy desk over this function's own parts, the way the webhook builds its own (bot-copy-runtime.ts): a wallet leader's buy is mirrored from here.
   const copy = createCopyDesk({
     links: overrides.links ?? (sql ? new NeonBotLinkStore(sql) : new MemoryBotLinkStore()),
     reads,
-    session: overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as Hex }),
+    session,
     telegram,
     ...(orus ? { orus } : {}),
     ...(hey ? { hey } : {}),
@@ -234,6 +236,13 @@ const build = () => {
   const launchClient = launchpad && !overrides.launch ? createPublicClient({ transport: http(rpcUrl) }) : undefined;
   const launch = overrides.launch ?? (launchpad && launchClient ? createLaunchInfo({ factory: launchpad as Address, readContract: (args) => launchClient.readContract(args as never) }) : undefined);
   const riskPort = overrides.riskPort ?? (overrides.port ? undefined : createRiskPort({ chainId, rpcUrl, poolManager: POOL_MANAGER, recordedPools }));
+  // Rug shields live in the orders' store and are sold by the orders' runner, built here over this function's signer, so an alarm sells them in the same pass.
+  const orderStore = process.env.BOT_ORDERS_OFF === "1" ? undefined : overrides.orders ?? (sql ? new NeonOrderStore(sql) : undefined);
+  const shieldRunner = orderStore ? new OrderRunner({ orders: orderStore, links: overrides.links ?? (sql ? new NeonBotLinkStore(sql) : new MemoryBotLinkStore()), reads, session, telegram, positions: positionLedgerFromEnv() }) : undefined;
+  const shields = orderStore && shieldRunner ? {
+    tokens: async () => (await orderStore.open(chainId)).filter((o) => o.kind === "shield").map((o) => o.token),
+    fire: (t: Address, why: string) => shieldRunner.fireShields(t, why),
+  } : undefined;
   const risk = process.env.BOT_RISK_OFF === "1" || !riskPort ? undefined : new RiskWatch({
     port: riskPort,
     store: overrides.riskStore ?? (sql ? new NeonRiskStore(sql) : new MemoryRiskStore()),
@@ -243,6 +252,7 @@ const build = () => {
     held: overrides.held ?? heldFromSql(sql),
     subs: overrides.alertStore ?? (sql ? new NeonAlertStore(sql) : new MemoryAlertStore()),
     ...(launch ? { launch } : {}),
+    ...(shields ? { shields } : {}),
     tell: (tgId, text, keyboard) => telegram.deliver({ kind: "send", chatId: tgId, text, ...(keyboard ? { keyboard } : {}) }).then(() => undefined),
     ...(groupChatId ? { feed: { post: (text: string, keyboard: Keyboard) => telegram.deliver({ kind: "send", chatId: groupChatId, text, keyboard }).then(() => undefined) } } : {}),
     botUsername: username!,

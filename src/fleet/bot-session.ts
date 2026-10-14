@@ -55,7 +55,7 @@ import type { CopyDesk } from "./bot-copy.js";
 import { CopyCards } from "./bot-copy-cards.js";
 import { heyLine, type HeyScanner } from "./bot-hey.js";
 import { issueNonce, type BotLinkStore } from "./bot-link.js";
-import { MAX_OPEN_ORDERS, newOrderId, type Order, type OrderStore } from "./bot-orders.js";
+import { MAX_OPEN_ORDERS, SHIELD_SLIPPAGE_BPS, newOrderId, type Order, type OrderStore } from "./bot-orders.js";
 import { orusLine, type OrusScanner } from "./bot-orus.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { CAPTION_MAX_CHARS, esc, type Keyboard, type Outgoing, type Telegram } from "./bot-telegram.js";
@@ -97,6 +97,8 @@ export type SessionBotDeps = {
   launch?: LaunchCheck;
   /** Standing orders (limit buys, DCA, take profit, stop loss), fired by api/bot/orders.js; absent, the card offers none. */
   orders?: OrderStore;
+  /** True when the watcher's risk watch runs and fires rug shields (bot-risk.ts); absent, no 🛡 Rug shield button. */
+  shields?: boolean;
   /** Big-buy alerts (bot-alerts.ts): the user's line, read by the watcher's cron; absent, no 🔔 Alerts button. */
   alerts?: AlertStore;
   botUsername: string;
@@ -326,6 +328,8 @@ export class SessionBot {
           ? { kind: "send", chatId, text: `take profit on <code>${a}</code>: reply with how far up from the price now, then how much of what you hold to sell, like <code>+50% sell 100%</code>. it sells once the price per token is that much higher, at that level or better.`, ask: "+N% sell N%" }
           : { kind: "send", chatId, text: `stop loss on <code>${a}</code>: reply with how far down from the price now, then how much of what you hold to sell, like <code>-20% sell 100%</code>. it sells once the price per token is that much lower, guarded at your sell slippage.`, ask: "-N% sell N%" }).then(() => undefined);
       }
+      // rug shield: one tap, no reply asked; the risk watch fires it (bot-orders.ts fireShields).
+      case "rs": await ack(); return a && isAddress(a) && this.#d.orders && this.#d.shields ? this.#placeShield(chatId, tgId, a as Address) : this.#help(chatId);
       case "orders": await ack(); return this.#orders(chatId, tgId, messageId);
       case "oc": await ack(); return a ? this.#cancelOrder(chatId, tgId, a, messageId) : this.#help(chatId);
       default: await ack(); return this.#home(chatId, tgId, messageId);
@@ -579,6 +583,7 @@ export class SessionBot {
       ...(held > 0n ? [this.#cfg("sellPresetsPct").map((p) => btn(`Sell ${p}%`, `s:${token}:${p}`)), [btn("Sell custom", `asks:${token}`)]] : []),
       ...(this.#d.orders ? [[btn("⏱ Limit buy", `lim:${token}`), btn("🔁 DCA", `dca:${token}`)]] : []),
       ...(this.#d.orders && held > 0n ? [[btn("🎯 Take profit", `tp:${token}`), btn("🛑 Stop loss", `sl:${token}`)]] : []),
+      ...(this.#d.orders && this.#d.shields && held > 0n ? [[btn("🛡 Rug shield", `rs:${token}`)]] : []),
       ...(held > 0n ? [[btn("📣 Share link", `share:${token}`)]] : []),
       [btn("↻ Refresh", `token:${token}`), btn("← Back", "home")],
     ), png);
@@ -769,7 +774,41 @@ export class SessionBot {
     await this.#say(chatId, `${this.#orderLine(order, info.symbol, info.decimals)} (${tp ? "+" : "-"}${move}% from now)\nset. the bot checks every five minutes, asks your account first, and tells you here when it sells or is refused. it fires once, then closes. cancel from 📋 Orders.`, kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
   }
 
+  /**
+   * A rug shield on a held token: one tap, all of the position, no level. Everything a sale needs that the owner
+   * controls is checked first, as for a stop loss (a position, let it sell, a token the session can sell, the contract's
+   * answer for a sale of all of it at the shield's floor), so a shield that could never fire is refused now in words.
+   * One per token: a second tap says it is on and where to turn it off.
+   */
+  async #placeShield(chatId: string, tgId: string, token: Address): Promise<void> {
+    const orders = this.#d.orders!;
+    const link = await this.#d.links.getLink(tgId);
+    if (!link) return this.#home(chatId, tgId);
+    const back = btn("← Back", `token:${token}`);
+    const open = await orders.openFor(tgId, this.#d.session.chainId);
+    if (open.some((o) => o.kind === "shield" && o.token.toLowerCase() === token.toLowerCase())) return this.#say(chatId, "🛡 rug shield is already on for this token. turn it off from 📋 Orders.", kb([btn("📋 Orders", "orders"), back]));
+    if (open.length >= MAX_OPEN_ORDERS) return this.#say(chatId, `that is ${MAX_OPEN_ORDERS} open orders, the most one account keeps in the beta; cancel one from 📋 Orders to set another.`, kb([btn("📋 Orders", "orders"), back]));
+    const sessions = `${this.#d.siteUrl}/app/sessions`;
+    const [info, held] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account)]);
+    if (!info.hasPool) return this.#say(chatId, "no ETH pool on the venue for this token, so nothing to shield.", kb([btn("← Back", "home")]));
+    if (held === 0n) return this.#say(chatId, `your account holds no ${esc(info.symbol)}, so there is nothing to shield yet.`, kb([back]));
+    if (!(await this.#d.session.sellAllowed(link.account))) return this.#say(chatId, "a rug shield sells from your account, and your session does not allow sells yet. on the Sessions page, next to the bot's key, turn on let it sell (one transaction), then tap it again.", kb([url("🔑 Sessions page", sessions), back]));
+    if (await this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)) return this.#say(chatId, permit2FixedSale(info.symbol), kb([url("🔑 Withdraw token to my wallet", `${sessions}#wtoken-form`), back]));
+    const quote = await this.#d.reads.quoteSell(token, held);
+    if (quote === null) return this.#say(chatId, "no ETH pool on the venue for this token.", kb([btn("← Back", "home")]));
+    const deadline = BigInt(Math.floor(this.#now.getTime() / 1000) + 3600);
+    const can = await this.#d.session.canSell(link.account, this.#d.reads.router, info.poolKey ?? venuePoolKey(token), held, minOutFor(quote, SHIELD_SLIPPAGE_BPS), deadline);
+    if (!can.ok) return this.#say(chatId, `your session says no to selling this position: <b>${esc(can.why)}</b>. manage it on the Sessions page, then tap it again.`, kb([url("🔑 Sessions page", sessions), back]));
+    const order: Order = { id: newOrderId(), tgId, account: link.account, chainId: this.#d.session.chainId, token, kind: "shield", ethWei: 0n, sellPct: 100, createdAt: this.#now.toISOString(), status: "open", refusals: 0 };
+    await orders.put(order);
+    await this.#say(chatId, [
+      `${this.#orderLine(order, info.symbol, info.decimals)}`,
+      "on. if liquidity is pulled from its pool or its dev sells, the bot sells all of it from your account at the next check (within five minutes), before the alarm goes to anyone, guarded at 10% under the quote so the exit lands. it fires once, then closes. off from 📋 Orders.",
+    ].join("\n"), kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
+  }
+
   #orderLine(o: Order, symbol: string, decimals: number): string {
+    if (o.kind === "shield") return `🛡 rug shield: sell all your <b>${esc(symbol)}</b> if its liquidity is pulled or its dev sells`;
     if (o.kind === "tp") return `🎯 take profit: sell <code>${o.sellPct ?? 100}%</code> of your <b>${esc(symbol)}</b> once one ETH buys <code>${fmt(o.triggerPerEth ?? 0n, decimals, 2)} ${esc(symbol)}</code> or fewer`;
     if (o.kind === "sl") return `🛑 stop loss: sell <code>${o.sellPct ?? 100}%</code> of your <b>${esc(symbol)}</b> once one ETH buys <code>${fmt(o.triggerPerEth ?? 0n, decimals, 2)} ${esc(symbol)}</code> or more`;
     if (o.kind === "limit") return `⏱ limit buy <code>${eth(o.ethWei)} ETH</code> of <b>${esc(symbol)}</b> at <code>${fmt(o.triggerPerEth ?? 0n, decimals, 2)} ${esc(symbol)}</code> per ETH or better`;

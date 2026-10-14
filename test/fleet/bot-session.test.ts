@@ -1334,3 +1334,34 @@ test("without a link secret the share message carries the plain t- link and no c
   assert.match(stranger.telegram.last(), /The bot never holds your key/, "not linked: home");
   assert.ok(stranger.buttons().includes("connect"), "with Connect");
 });
+
+test("rug shield: offered over a position only while the risk watch runs; one tap sets it after the account agrees to selling all of it; a second tap says it is on", async () => {
+  const { MemoryOrderStore } = await import("../../src/fleet/bot-orders.js");
+  const orders = new MemoryOrderStore();
+  const { bot, telegram, buttons, links, session } = setup({ orders, shields: true });
+  await linked(links);
+  await bot.handle(dm(PEPE));
+  assert.ok(buttons().includes(`rs:${PEPE}`));
+  const off = setup({ orders: new MemoryOrderStore() });
+  await linked(off.links);
+  await off.bot.handle(dm(PEPE));
+  assert.ok(!off.buttons().includes(`rs:${PEPE}`), "no risk watch, no shield button");
+  // let it sell off: refused with the Sessions page, nothing stored.
+  await bot.handle(tap(`rs:${PEPE}`));
+  assert.match(telegram.last(), /a rug shield sells from your account, and your session does not allow sells yet/);
+  assert.equal((await orders.openFor("7", 4663)).length, 0);
+  session.allowSell(true);
+  await bot.handle(tap(`rs:${PEPE}`));
+  const open = await orders.openFor("7", 4663);
+  assert.equal(open.length, 1);
+  assert.equal(open[0]!.kind, "shield");
+  assert.equal(open[0]!.sellPct, 100);
+  assert.equal(open[0]!.triggerPerEth, undefined, "no level");
+  assert.match(telegram.last(), /🛡 rug shield: sell all your <b>PEPE<\/b> if its liquidity is pulled or its dev sells\non\. .*before the alarm goes to anyone/);
+  await bot.handle(tap(`rs:${PEPE}`));
+  assert.match(telegram.last(), /already on for this token/);
+  assert.equal((await orders.openFor("7", 4663)).length, 1, "one shield per token");
+  await bot.handle(tap("orders"));
+  assert.match(telegram.last(), /1\. 🛡 rug shield: sell all your <b>PEPE<\/b>/);
+  assert.equal(session.sales.length, 0, "setting a shield sells nothing");
+});
