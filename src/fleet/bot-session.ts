@@ -655,7 +655,9 @@ export class SessionBot {
     // The contract's own answer first, so a refused buy burns no gas and says why in the contract's words.
     // The account pays the trade: a buy bigger than it holds would revert on chain with the bot's gas spent (2026-10-05).
     const has = await this.#d.reads.ethBalance(link.account);
-    if (has < wei) return this.#say(chatId, `your account holds <code>${eth(has)} ETH</code>; this buy needs <code>${eth(wei)} ETH</code>. fund it on the Sessions page, or buy less.`, kb([url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("← Back", `token:${token}`)]));
+    // On mainnet the ETH can come from Base, Arbitrum or Ethereum too, through Relay on the same page (app/src/fleet/relay.ts).
+    const elsewhere = this.#d.session.chainId === 4663;
+    if (has < wei) return this.#say(chatId, `your account holds <code>${eth(has)} ETH</code>; this buy needs <code>${eth(wei)} ETH</code>. fund it on the Sessions page${elsewhere ? ", from here or from base, arbitrum or ethereum," : ""} or buy less.`, kb([url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), ...(elsewhere ? [url("🌉 From another chain", `${this.#d.siteUrl}/app/sessions#xchain`)] : [])], [btn("← Back", `token:${token}`)]));
     const can = await this.#d.session.canExecute(link.account, this.#d.reads.router, UNIVERSAL_ROUTER_EXECUTE_SELECTOR, wei);
     if (!can.ok) return this.#say(chatId, `your session says no: <b>${esc(can.why)}</b>. manage it on the Sessions page.`, kb([url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("← Back", `token:${token}`)]));
     const minOut = minOutFor(quote, this.#cfg("buySlippageBps"));

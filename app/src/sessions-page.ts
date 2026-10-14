@@ -42,6 +42,7 @@ import {
   walletProvider,
   type Eip1193,
 } from "./fleet/page-shared.js";
+import { OTHER_CHAINS, RELAY_HOME_CHAIN, RelayRefusal, quoteRelay, relayStatus, type OtherChain, type QuoteAsk, type RelayQuote } from "./fleet/relay.js";
 
 initHeaderWallet();
 initShell({ pill: false });
@@ -152,7 +153,7 @@ const refreshAccount = async (): Promise<void> => {
   wallet = getConnectedWallet();
   if (!wallet) {
     el("account-note").textContent = "Connect your wallet to see your account.";
-    for (const id of ["account-create", "fund-submit", "withdraw-submit", "wtoken-submit", "grant-submit"]) button(id).disabled = true;
+    for (const id of ["account-create", "fund-submit", "withdraw-submit", "xfund-submit", "xout-submit", "wtoken-submit", "grant-submit"]) button(id).disabled = true;
     return;
   }
   if (!factory) {
@@ -186,6 +187,8 @@ const refreshAccount = async (): Promise<void> => {
   button("account-create").disabled = deployed;
   button("fund-submit").disabled = !deployed;
   button("withdraw-submit").disabled = !deployed;
+  button("xfund-submit").disabled = !deployed;
+  button("xout-submit").disabled = !deployed;
   button("wtoken-submit").disabled = !deployed;
   button("grant-submit").disabled = !deployed;
   input("grant-target").value ||= UNIVERSAL_ROUTER;
@@ -294,6 +297,141 @@ el("withdraw-form").addEventListener("submit", (event) => {
   try { wei = BigInt(parseEth(input("withdraw-amount").value)); } catch { el("withdraw-note").textContent = "Enter an amount like 0.01."; return; }
   void transact("Withdraw", account, encodeWithdraw(wallet, wei)).then((ok) => { if (ok) void refreshAccount(); });
 });
+
+// ---- ETH from and to other chains (relay.ts) ----
+// Shown on Robinhood Chain mainnet only: Relay routes to 4663 and to no testnet. Each quote is checked against the ask
+// before the wallet is asked anything, and the page follows the request until Relay says it landed.
+
+const chainById = (id: number): OtherChain => OTHER_CHAINS.find((c) => c.id === id) ?? OTHER_CHAINS[0]!;
+
+const switchTo = async (eth: Eip1193, c: OtherChain): Promise<boolean> => {
+  const hex = `0x${c.id.toString(16)}`;
+  const on = async () => BigInt((await eth.request({ method: "eth_chainId" })) as string) === BigInt(c.id);
+  if (await on()) return true;
+  try {
+    await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+    return await on();
+  } catch (error) {
+    if ((error as { code?: number }).code !== 4902 || !c.add) return false;
+    try { await eth.request({ method: "wallet_addEthereumChain", params: [c.add] }); return await on(); } catch { return false; }
+  }
+};
+
+/** The route's transactions from the wallet, in order, each waited for; false at the first one that does not land. */
+const sendRoute = async (label: string, q: RelayQuote): Promise<boolean> => {
+  const eth = ethereum();
+  for (const tx of q.txs) {
+    banner(`${label}: confirm in your wallet…`, "pending");
+    let hash: Hex;
+    try {
+      hash = (await eth.request({ method: "eth_sendTransaction", params: [{ from: wallet, to: tx.to, data: tx.data, value: `0x${tx.value.toString(16)}` }] })) as Hex;
+    } catch (error) {
+      banner(`${label}: ${(error as { message?: string }).message?.split("\n")[0] ?? "the wallet refused"}`, "error");
+      return false;
+    }
+    banner(`${label}: sent, waiting for the chain…`, "pending");
+    const receipt = await waitForReceipt(hash);
+    if (!receipt || receipt.status !== "0x1") { banner(`${label}: the transaction did not land. Nothing more was sent.`, "error"); return false; }
+  }
+  return true;
+};
+
+/** Relay's word on the request, every few seconds for up to three minutes. */
+const follow = async (label: string, q: RelayQuote, where: string): Promise<void> => {
+  banner(`${label}: on its way to ${where}…`, "pending");
+  for (let i = 0; i < 60; i++) {
+    const s = await relayStatus(q.requestId);
+    if (s === "success") { banner(`${label}: landed on ${where}.`, "ok"); return; }
+    if (s === "failure" || s === "refund") { banner(`${label}: Relay could not fill it and ${s === "refund" ? "refunded it to your wallet" : "reports a failure"}. Request ${q.requestId.slice(0, 10)}… on relay.link.`, "error"); return; }
+    await new Promise((r) => globalThis.setTimeout(r, 3_000));
+  }
+  banner(`${label}: still on its way. Track request ${q.requestId.slice(0, 10)}… on relay.link; it lands without this page.`, "pending");
+};
+
+/** A quote lives seconds: the route is asked for again right before it is sent, and one that pays more than 1% less than the one shown is not sent. */
+const fresh = async (label: string, ask: QuoteAsk, shown: RelayQuote): Promise<RelayQuote | undefined> => {
+  try {
+    const q = await quoteRelay(ask);
+    if (q.outWei * 100n < shown.outWei * 99n) { banner(`${label}: the route now pays less than the ${toEth(shown.outWei.toString())} ETH you agreed to, so nothing was sent. Try again.`, "error"); return undefined; }
+    return q;
+  } catch (error) {
+    banner(`${label}: ${error instanceof RelayRefusal ? error.message : "Relay did not answer"}. Nothing was sent.`, "error");
+    return undefined;
+  }
+};
+
+const askedWei = (id: string, note: string): bigint | undefined => {
+  try {
+    const wei = BigInt(parseEth(input(id).value));
+    if (wei > 0n) return wei;
+  } catch { /* said below */ }
+  el(note).textContent = "Enter an amount like 0.01.";
+  return undefined;
+};
+
+const ask = (q: RelayQuote, from: string, to: string): Promise<boolean> => confirmDialog({
+  title: `${toEth(q.inWei.toString())} ETH from ${from} to ${to}`,
+  body: `About ${toEth(q.outWei.toString())} ETH lands ${to === "your account" ? "in your account" : `in your wallet on ${to}`}${q.seconds ? `, usually in about ${q.seconds} s` : ""}. Relay keeps the difference, ${toEth((q.inWei - q.outWei).toString())} ETH, as its fee. The ETH goes nowhere else: this page checked the route pays only you.`,
+  confirm: "Send",
+});
+
+el("xfund-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!account || !wallet) return;
+  const note = "xfund-note";
+  const wei = askedWei("xfund-amount", note);
+  if (wei === undefined) return;
+  const from = chainById(Number((el("xfund-chain") as HTMLSelectElement).value));
+  const acct = account, user = wallet;
+  void (async () => {
+    el(note).textContent = "Asking Relay for a route…";
+    const wanted: QuoteAsk = { user, recipient: acct, fromChain: from.id, toChain: chainTarget.chainId, amountWei: wei };
+    let q: RelayQuote;
+    try { q = await quoteRelay(wanted); }
+    catch (error) { el(note).textContent = error instanceof RelayRefusal ? `Not sent: ${error.message}.` : "Relay did not answer. Try again in a moment."; return; }
+    el(note).textContent = "";
+    if (!(await ask(q, from.name, "your account"))) return;
+    if (!(await switchTo(ethereum(), from))) { banner(`Switch your wallet to ${from.name} to send from there.`, "error"); return; }
+    const now = await fresh(`From ${from.name}`, wanted, q);
+    if (!now || !(await sendRoute(`From ${from.name}`, now))) return;
+    await follow(`From ${from.name}`, now, "your account");
+    void refreshAccount();
+  })();
+});
+
+el("xout-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!account || !wallet) return;
+  const note = "xout-note";
+  const wei = askedWei("xout-amount", note);
+  if (wei === undefined) return;
+  const to = chainById(Number((el("xout-chain") as HTMLSelectElement).value));
+  const acct = account, user = wallet;
+  void (async () => {
+    el(note).textContent = "Asking Relay for a route…";
+    const wanted: QuoteAsk = { user, recipient: user, fromChain: chainTarget.chainId, toChain: to.id, amountWei: wei };
+    let q: RelayQuote;
+    try { q = await quoteRelay(wanted); }
+    catch (error) { el(note).textContent = error instanceof RelayRefusal ? `Not sent: ${error.message}.` : "Relay did not answer. Try again in a moment."; return; }
+    el(note).textContent = "";
+    if (!(await ask(q, "your account", to.name))) return;
+    // First the account pays the wallet here; only once that landed does the wallet send it on. A route that fails after
+    // the withdraw leaves the ETH in the wallet on Robinhood Chain, which is said.
+    if (!(await transact("Withdraw", acct, encodeWithdraw(user, wei)))) return;
+    void refreshAccount();
+    const now = await fresh(`To ${to.name}`, wanted, q);
+    if (!now || !(await sendRoute(`To ${to.name}`, now))) { el(note).textContent = `The ${toEth(wei.toString())} ETH is in your wallet on Robinhood Chain; try the second step again any time.`; return; }
+    await follow(`To ${to.name}`, now, to.name);
+  })();
+});
+
+const initCrossChain = async (): Promise<void> => {
+  await loadChainTarget();
+  if (chainTarget.chainId !== RELAY_HOME_CHAIN) return;
+  for (const id of ["xfund-chain", "xout-chain"]) (el(id) as HTMLSelectElement).replaceChildren(...OTHER_CHAINS.map((c) => new Option(c.name, String(c.id))));
+  el("xchain").hidden = false;
+};
+void initCrossChain();
 
 // ---- a token back to the wallet ----
 // Tokens the bot bought sit in the account; the owner takes them out with withdrawToken, the one way out that needs no key.

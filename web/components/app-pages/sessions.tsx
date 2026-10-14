@@ -54,6 +54,33 @@ Anyone running a bot today hands it their wallet key. Here you keep the wallet. 
             <p id="withdraw-note" className="fineprint" role="status" aria-live="polite"></p>
             <button id="withdraw-submit" type="submit" className="ghost" disabled>Withdraw to my wallet</button>
           </form>
+          <div id="xchain" className="withdraw-form" hidden>
+            <p className="fineprint"><b>ETH on another chain?</b> Fund from Base, Arbitrum or Ethereum, or take ETH back out to one, through Relay. No bridge to run: one transaction from your wallet, and it lands where you pick, usually in seconds. $CHIT stays on Robinhood Chain; this moves ETH only.</p>
+            <form id="xfund-form" className="withdraw-form">
+              <div className="field">
+                <label htmlFor="xfund-chain">From</label>
+                <select id="xfund-chain"></select>
+              </div>
+              <div className="field">
+                <label htmlFor="xfund-amount">Amount (ETH)</label>
+                <input id="xfund-amount" name="amount" type="text" inputMode="decimal" defaultValue="0.01" />
+              </div>
+              <p id="xfund-note" className="fineprint" role="status" aria-live="polite"></p>
+              <button id="xfund-submit" type="submit" className="primary" disabled>Fund from another chain</button>
+            </form>
+            <form id="xout-form" className="withdraw-form">
+              <div className="field">
+                <label htmlFor="xout-chain">Take back to</label>
+                <select id="xout-chain"></select>
+              </div>
+              <div className="field">
+                <label htmlFor="xout-amount">Amount (ETH)</label>
+                <input id="xout-amount" name="amount" type="text" inputMode="decimal" defaultValue="0.01" />
+              </div>
+              <p id="xout-note" className="fineprint" role="status" aria-live="polite">Two steps: the account sends it to your wallet here, then your wallet sends it on. Keep a little ETH on Robinhood Chain for that second step&apos;s gas.</p>
+              <button id="xout-submit" type="submit" className="ghost" disabled>Withdraw to another chain</button>
+            </form>
+          </div>
           <div className="withdraw-form">
             <p className="fineprint">Tokens in this account. Only you can take them out.</p>
             <div id="wtoken-list" className="fineprint" role="status" aria-live="polite"></div>

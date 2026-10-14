@@ -83,6 +83,33 @@
             <p id="withdraw-note" class="fineprint" role="status" aria-live="polite"></p>
             <button id="withdraw-submit" type="submit" class="ghost" disabled>Withdraw to my wallet</button>
           </form>
+          <div id="xchain" class="withdraw-form" hidden>
+            <p class="fineprint"><b>ETH on another chain?</b> Fund from Base, Arbitrum or Ethereum, or take ETH back out to one, through Relay. No bridge to run: one transaction from your wallet, and it lands where you pick, usually in seconds. $CHIT stays on Robinhood Chain; this moves ETH only.</p>
+            <form id="xfund-form" class="withdraw-form">
+              <div class="field">
+                <label for="xfund-chain">From</label>
+                <select id="xfund-chain"></select>
+              </div>
+              <div class="field">
+                <label for="xfund-amount">Amount (ETH)</label>
+                <input id="xfund-amount" name="amount" type="text" inputmode="decimal" value="0.01" />
+              </div>
+              <p id="xfund-note" class="fineprint" role="status" aria-live="polite"></p>
+              <button id="xfund-submit" type="submit" class="primary" disabled>Fund from another chain</button>
+            </form>
+            <form id="xout-form" class="withdraw-form">
+              <div class="field">
+                <label for="xout-chain">Take back to</label>
+                <select id="xout-chain"></select>
+              </div>
+              <div class="field">
+                <label for="xout-amount">Amount (ETH)</label>
+                <input id="xout-amount" name="amount" type="text" inputmode="decimal" value="0.01" />
+              </div>
+              <p id="xout-note" class="fineprint" role="status" aria-live="polite">Two steps: the account sends it to your wallet here, then your wallet sends it on. Keep a little ETH on Robinhood Chain for that second step's gas.</p>
+              <button id="xout-submit" type="submit" class="ghost" disabled>Withdraw to another chain</button>
+            </form>
+          </div>
           <div class="withdraw-form">
             <p class="fineprint">Tokens in this account. Only you can take them out.</p>
             <div id="wtoken-list" class="fineprint" role="status" aria-live="polite"></div>
