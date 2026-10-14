@@ -35,6 +35,7 @@ import { SessionBot, parseTokenLink, referralCodeFor } from "../../src/fleet/bot
 import type { SessionSell } from "../../src/fleet/session-keys.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 import { revertWords, sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
+import { sellGasWei } from "../../src/fleet/bot-gas.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, minOutFor, venuePoolKey } from "../../src/fleet/v4-swap.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
@@ -755,8 +756,8 @@ test("the daily execute and gas limits count sells with buys, a sale at its own 
   await bot.handle(tap(`s:${PEPE}:50`));
   assert.equal(session.sales.length, 1, "the third trade of the day is refused");
   assert.match(telegram.last(), /2 trades today/);
-  // The gas budget: one sale is charged 1,000,000 gas at one gwei; a budget of that much is spent by one sale.
-  const tight = setup({ dailyGasWei: 1_000_000n * 1_000_000_000n });
+  // The gas budget: one sale is charged its 1,000,000 gas ceiling at the price ceiling (bot-gas.ts); a budget of that much is spent by one sale.
+  const tight = setup({ dailyGasWei: sellGasWei() });
   await linked(tight.links);
   tight.session.allowSell(true);
   await tight.bot.handle(tap(`s:${PEPE}:50`));

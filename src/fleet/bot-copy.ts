@@ -123,6 +123,7 @@ import { esc, type Keyboard } from "./bot-telegram.js";
 import type { VenueBuy } from "./bot-watch.js";
 import { poolIdOf } from "./pool-registry.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor, venuePoolKey } from "./v4-swap.js";
+import { executeGasWei } from "./bot-gas.js";
 
 export type Leader = {
   tgId: string;
@@ -224,7 +225,7 @@ const DEFAULT_TOKEN_DAY_CAP = 2n * 10n ** 18n;
 const DEFAULT_MIRROR_BUDGET_MS = 30_000;
 /** The session bot's daily limits (bot-session.ts DEFAULTS) and its charge per execute, for the ledger's count. */
 const DAILY_DEFAULTS = { executes: 200, gasWei: 2_000_000_000_000_000n };
-const EXECUTE_GAS_WEI = 700_000n * 1_000_000_000n;
+const EXECUTE_GAS_WEI = executeGasWei();
 /** A wallet leader's venue buy under this is dust and is read as nothing; the cards say the size. */
 export const VENUE_MIN_ETH_WEI = 10n ** 16n;
 /** Venue buys read for one wallet leader in a UTC day; a wallet is one signature, so the feed and the followers are not theirs to flood. */
@@ -484,6 +485,9 @@ export class CopyDesk {
     for (const f of followers) {
       const link = await this.#d.links.getLink(f.followerTgId);
       if (!link) { await record({ ...base, followerTgId: f.followerTgId, ethWei: 0n, outcome: "skipped", why: "follower is not linked" }); continue; }
+      // A token that fixes Permit2's allowance at infinity can be bought into the account but never sold from it by the session (2026-10-07, CHOP):
+      // a mirror would leave the follower in a position the bot cannot exit, so none is sent. A failed read is "no", as for a tap.
+      if (await this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)) { await record({ ...base, followerTgId: f.followerTgId, ethWei: 0n, outcome: "skipped", why: `${info.symbol} fixes its Permit2 approval at infinity, so the bot could buy it into your account but never sell it from your session; nothing was sent for you` }); continue; }
       const held = this.#d.holders ? await this.#d.holders(link.owner) : { ok: true as const };
       if (!held.ok) { await record({ ...base, followerTgId: f.followerTgId, ethWei: 0n, outcome: "skipped", why: "unknown" in held ? "your wallet's $CHIT could not be checked just now; nothing was sent for you" : "your wallet holds less $CHIT than the beta's line; mirrors are for holders" }); continue; }
       // Sized to the leader's buy, never above the follower's cap.

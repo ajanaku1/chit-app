@@ -41,6 +41,7 @@ import type { SessionChain } from "../../src/fleet/bot-session-chain.js";
 import type { Keyboard } from "../../src/fleet/bot-telegram.js";
 import { poolIdOf } from "../../src/fleet/pool-registry.js";
 import { venuePoolKey } from "../../src/fleet/v4-swap.js";
+import { executeGasWei } from "../../src/fleet/bot-gas.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
 const ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904" as Address;
@@ -103,7 +104,7 @@ const setup = (opts: { orus?: OrusScan | null | "off"; tokenDayCapWei?: bigint; 
     ...(opts.feed === false ? {} : { feed: { chatId: "-100", post: async (text, keyboard) => { once("feed", "telegram 429"); posted.push({ text, keyboard }); } } }),
   });
   const link = (tgId: string, n: number) => links.putLink({ tgId, account: acct(n), owner: OWNER, chainId: 4663, nonce: "n", signature: "0x00", linkedAt: clock.toISOString() });
-  return { desk, store, links, link, calls, waits, told, posted, faults, refuseWith: (f: typeof refuse) => { refuse = f; }, failSendFor: (f: typeof failSend) => { failSend = f; }, advance: (ms: number) => { t = new Date(t.getTime() + ms); } };
+  return { desk, store, links, link, calls, waits, told, posted, faults, session, refuseWith: (f: typeof refuse) => { refuse = f; }, failSendFor: (f: typeof failSend) => { failSend = f; }, advance: (ms: number) => { t = new Date(t.getTime() + ms); } };
 };
 
 test("become leader needs a link; the leader's account is the linked one; close hides them from the list and from leader()", async () => {
@@ -498,7 +499,7 @@ test("onVenueBuy: the follower's daily allowance is one ledger with the session 
   assert.deepEqual((await tight.desk.onVenueBuy(venueBuy({ txHash: hash("ef") })))!.map((m) => [m.outcome, m.why]), [["skipped", "that is 3 buys today from your account; again tomorrow"]]);
   assert.equal(tight.calls.length, 1);
   const gas = setup({ dailyExecutes: 100 });
-  const pricey = new CopyDesk({ store: gas.store, links: gas.links, reads, session: { chainId: 4663 } as unknown as SessionChain, dailyGasWei: 700_000n * 1_000_000_000n * 2n, now: () => clock });
+  const pricey = new CopyDesk({ store: gas.store, links: gas.links, reads, session: { chainId: 4663 } as unknown as SessionChain, dailyGasWei: executeGasWei() * 2n, now: () => clock });
   await pricey.noteDay("5");
   assert.equal(await pricey.overDay("5"), null);
   await pricey.noteDay("5");
@@ -723,4 +724,26 @@ test("neon: a kept venue buy is one insert whose RETURNING says whether this was
   assert.deepEqual(calls.at(-1), { query: "DELETE FROM bot_venue_deferred WHERE tx_hash = $1", params: ["0x" + "ab".repeat(32)] });
   assert.deepEqual((await store.deferredVenueBuys()).map((d) => d.buy.txHash), [hash("01")]);
   assert.ok(calls.some((c) => c.query.includes("CREATE TABLE IF NOT EXISTS bot_venue_deferred")), "the table is in the schema");
+});
+
+test("mirror: a token that fixes Permit2's allowance at infinity is not mirrored into any follower's account, each skipped and told why, nothing executed (2026-10-07, CHOP)", async () => {
+  const s = setup();
+  await leaderWithFollowers(s, ["0.01", "0.02"]);
+  const asked: Address[] = [];
+  s.session.permit2Fixed = async (_token, account) => { asked.push(account); return true; };
+  const out = await s.desk.mirror("1", PEPE, parseEther("0.05"));
+  assert.deepEqual(out.map((m) => [m.followerTgId, m.outcome]), [["2", "skipped"], ["3", "skipped"]]);
+  assert.match(out[0]!.why, /PEPE fixes its Permit2 approval at infinity, so the bot could buy it into your account but never sell it from your session; nothing was sent for you/);
+  assert.equal(s.calls.length, 0, "nothing executed");
+  assert.equal(asked.length, 2, "asked of each follower's own account");
+  assert.match(s.told[0]!.text, /never sell it from your session/);
+});
+
+test("mirror: a token whose Permit2 allowance is not fixed is mirrored as before, and a failed allowance read never blocks a mirror", async () => {
+  const s = setup();
+  await leaderWithFollowers(s, ["0.01"]);
+  s.session.permit2Fixed = async () => { throw new Error("rpc down"); };
+  const out = await s.desk.mirror("1", PEPE, parseEther("0.05"));
+  assert.equal(out[0]!.outcome, "landed");
+  assert.equal(s.calls.length, 1);
 });

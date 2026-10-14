@@ -55,6 +55,10 @@
  *                                fired orders alike) and how much gas the
  *                                bot fronts; the same budget the orders'
  *                                cron reads
+ *   BOT_GAS_PRICE_GWEI           session mode: the price each trade is
+ *                                counted at against that budget (its gas
+ *                                ceiling times this); default 0.1, about
+ *                                three times 4663's price (bot-gas.ts)
  *   BOT_GROUP_CHAT_ID            session mode: the group (a chat id, usually
  *                                -100…) where a leader's landed buy is posted
  *                                the second it lands, with the hash and two

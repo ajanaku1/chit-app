@@ -64,6 +64,7 @@ import { MemoryTradeLocks, MemoryUpdateClaims, type TradeLocks, type UpdateClaim
 import { sessionState } from "./session-keys.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor, venuePoolKey } from "./v4-swap.js";
 import type { Update } from "./bot-handlers.js";
+import { executeGasWei, sellGasWei } from "./bot-gas.js";
 
 export type SessionBotDeps = {
   /** Token reads: price, pool, balances, quotes. Never used to sign here. */
@@ -152,10 +153,10 @@ const DEFAULTS = { dailyExecutes: 200, dailyGasWei: 2_000_000_000_000_000n, buyS
  * runs over keeps going and its answer is kept for the next tap, for this long.
  */
 const HELD_CACHE_MS = 10 * 60_000;
-/** What the daily gas budget charges per send: the gas ceiling at one gwei, so a loop is stopped early rather than late. */
-const EXECUTE_GAS_WEI = 700_000n * 1_000_000_000n;
-/** A sale's ceiling (bot-session-chain.ts SELL_GAS): the swap with its two approvals made and cleared around it. */
-const SELL_GAS_WEI = 1_000_000n * 1_000_000_000n;
+/** What the daily gas budget charges per send: the gas ceiling at the price ceiling (bot-gas.ts), so a loop is stopped early rather than late. */
+const EXECUTE_GAS_WEI = executeGasWei();
+/** A sale's ceiling (bot-session-chain.ts SELL_GAS): the swap with its two approvals made and cleared around it, at the same price ceiling. */
+const SELL_GAS_WEI = sellGasWei();
 /**
  * copy: how long after a request began its mirrors, receipts included, must
  * be through. api/bot.js lives 60 s (vercel.json); the feed's message and
@@ -630,7 +631,7 @@ export class SessionBot {
     if (count.executes >= this.#cfg("dailyExecutes")) return `that is ${this.#cfg("dailyExecutes")} buys today from your account; again tomorrow`;
     if (count.gasWei >= this.#cfg("dailyGasWei")) return "the bot has fronted its daily gas for your account; again tomorrow";
     count.executes += 1;
-    count.gasWei += 700_000n * 1_000_000_000n;
+    count.gasWei += EXECUTE_GAS_WEI;
     return null;
   }
 

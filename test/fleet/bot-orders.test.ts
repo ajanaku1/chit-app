@@ -22,6 +22,7 @@ import { FIRING_LEASE_MS, MemoryOrderStore, NeonOrderStore, OrderRunner, due, fa
 import type { SessionChain } from "../../src/fleet/bot-session-chain.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor } from "../../src/fleet/v4-swap.js";
+import { executeGasWei } from "../../src/fleet/bot-gas.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
 const ACCOUNT = "0x00000000000000000000000000000000000000aa" as Address;
@@ -373,7 +374,7 @@ test("each owner has the same daily budget a tapped Buy has, counted from the le
   assert.equal((await orders.get("l2"))!.status, "done");
   assert.equal((await orders.get("d"))!.remaining, 3);
   // The gas budget the same way: three executes at the ceiling, and the fourth waits.
-  const gas = setup(1_500_000n, { dailyGasWei: 700_000n * 1_000_000_000n * 3n });
+  const gas = setup(1_500_000n, { dailyGasWei: executeGasWei() * 3n });
   await linked(gas.links);
   for (let i = 0; i < 4; i++) await gas.orders.put(order({ id: `g${i}`, kind: "limit", triggerPerEth: 1n, createdAt: new Date(clock.getTime() + i).toISOString() }));
   assert.deepEqual(await gas.runner.run(), { ...none, fired: 3, landed: 3, waited: 1 });
