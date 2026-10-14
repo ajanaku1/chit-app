@@ -143,9 +143,9 @@ export function Header({ current }: { current: string }) {
           </Link>
         ))}
       </nav>
-      <div className={`flex flex-col gap-3 text-[15px] ${open ? "rise-in" : "opacity-0"}`} style={{ animationDelay: "420ms" }}>
-        <a href="https://t.me/usechit_bot" tabIndex={open ? 0 : -1} className="font-medium underline decoration-ink/30 underline-offset-4">Open @usechit_bot</a>
-        <a href="https://t.me/usechittools" tabIndex={open ? 0 : -1} className="font-medium underline decoration-ink/30 underline-offset-4">Telegram</a>
+      <div className={`flex flex-col items-start gap-1 text-[15px] ${open ? "rise-in" : "opacity-0"}`} style={{ animationDelay: "420ms" }}>
+        <a href="https://t.me/usechit_bot" tabIndex={open ? 0 : -1} className="py-2 font-medium underline decoration-ink/30 underline-offset-4">Open @usechit_bot</a>
+        <a href="https://t.me/usechittools" tabIndex={open ? 0 : -1} className="py-2 font-medium underline decoration-ink/30 underline-offset-4">Telegram</a>
       </div>
     </div>
     </>
