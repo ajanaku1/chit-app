@@ -6,8 +6,8 @@
   "commits": 769,
   "tasks": {
     "done": 174,
-    "total": 176,
-    "percent": 98
+    "total": 190,
+    "percent": 91
   },
   "stages": [
     {
@@ -155,6 +155,102 @@
         {
           "id": "T094",
           "text": "[F] Deploy with a guardian and open the beta"
+        }
+      ]
+    },
+    {
+      "id": "005-multichain-trading",
+      "title": "Trade on any chain, burn one token",
+      "done": 0,
+      "total": 14,
+      "phases": [
+        {
+          "name": "One chain list, no change",
+          "done": 0,
+          "total": 3
+        },
+        {
+          "name": "One account address on every chain",
+          "done": 0,
+          "total": 4
+        },
+        {
+          "name": "Paste a token, trade it where it lives",
+          "done": 0,
+          "total": 2
+        },
+        {
+          "name": "Orders, alerts and positions on every chain",
+          "done": 0,
+          "total": 2
+        },
+        {
+          "name": "Fees home, holders everywhere",
+          "done": 0,
+          "total": 2
+        },
+        {
+          "name": "Ship",
+          "done": 0,
+          "total": 1
+        }
+      ],
+      "open": [
+        {
+          "id": "T001",
+          "text": "[L] Chain config"
+        },
+        {
+          "id": "T002",
+          "text": "[L] Build reads, session chain, order runner, watcher and risk watch per enabled chain from that list; with `BOT_CHAINS=4663` the full bot suite passes unchanged"
+        },
+        {
+          "id": "T003",
+          "text": "[L] Swap encoding chosen by chain: the 4663 variant with `minHopPriceX36`, the standard v4 one elsewhere, each pinned by a test"
+        },
+        {
+          "id": "T004",
+          "text": "[L] Verify the Base addresses"
+        },
+        {
+          "id": "T005",
+          "text": "[L] Session factory on a Base fork through the deterministic deployer; account n has the same address as on 4663"
+        },
+        {
+          "id": "T006",
+          "text": "[L] Sessions page chain picker: every read, button and transaction follows the picked chain, named in words"
+        },
+        {
+          "id": "T007",
+          "text": "[L] Links per"
+        },
+        {
+          "id": "T008",
+          "text": "[L] Resolve a pasted address or one-tap link to its chain by code and symbol; two matches ask, Robinhood Chain first"
+        },
+        {
+          "id": "T009",
+          "text": "[L] Base buys and sells on a fork through the bot, every card and line naming its chain"
+        },
+        {
+          "id": "T010",
+          "text": "[L] Order runner per chain; a Base stop loss fires once at its level in a Base fork test"
+        },
+        {
+          "id": "T011",
+          "text": "[L] Watcher and risk watch for Base; positions across chains in one card"
+        },
+        {
+          "id": "T012",
+          "text": "[L] Fee accrual on Base and the sweep home through Relay to the 4663 buyback, quote checked against the ask; a failed sweep leaves the ETH where it was"
+        },
+        {
+          "id": "T013",
+          "text": "[L] Holders line and holder discount read $CHIT on 4663 only"
+        },
+        {
+          "id": "T014",
+          "text": "[B] Deploy the factory on Base, then the bot with `BOT_CHAINS=4663,8453`, after the gates"
         }
       ]
     }
