@@ -1,13 +1,13 @@
 {
   "rule": "PROGRESS.md",
-  "generatedAt": "2026-10-14T08:19:28.866Z",
-  "commit": "be5424e",
-  "committedAt": "2026-10-11T12:05:53+03:00",
-  "commits": 890,
+  "generatedAt": "2026-09-28T14:30:26.862Z",
+  "commit": "109fdae",
+  "committedAt": "2026-09-28T15:22:54+01:00",
+  "commits": 769,
   "tasks": {
-    "done": 0,
-    "total": 14,
-    "percent": 0
+    "done": 174,
+    "total": 190,
+    "percent": 91
   },
   "stages": [
     {
@@ -30,25 +30,123 @@
     {
       "id": "001-fleet-mission",
       "title": "Fleet Mission",
-      "done": 0,
-      "total": 0,
-      "phases": [],
+      "done": 41,
+      "total": 41,
+      "phases": [
+        {
+          "name": "Evidence and harness",
+          "done": 8,
+          "total": 8
+        },
+        {
+          "name": "Foundational controls",
+          "done": 8,
+          "total": 8
+        },
+        {
+          "name": "US1 creation",
+          "done": 8,
+          "total": 8
+        },
+        {
+          "name": "US2 bounded buy",
+          "done": 8,
+          "total": 8
+        },
+        {
+          "name": "US3 lifecycle",
+          "done": 5,
+          "total": 5
+        },
+        {
+          "name": "Acceptance",
+          "done": 4,
+          "total": 4
+        }
+      ],
       "open": []
     },
     {
       "id": "002-private-funding-pool",
       "title": "Private Funding Pool",
-      "done": 0,
-      "total": 0,
-      "phases": [],
+      "done": 40,
+      "total": 40,
+      "phases": [
+        {
+          "name": "Setup",
+          "done": 3,
+          "total": 3
+        },
+        {
+          "name": "Foundational",
+          "done": 9,
+          "total": 9
+        },
+        {
+          "name": "User Story 1 — Hold a Chit balance",
+          "done": 7,
+          "total": 7
+        },
+        {
+          "name": "User Story 2 — Fund a fleet from the balance and trade",
+          "done": 8,
+          "total": 8
+        },
+        {
+          "name": "User Story 3 — Control and get money back privately",
+          "done": 6,
+          "total": 6
+        },
+        {
+          "name": "Polish and cross-cutting",
+          "done": 7,
+          "total": 7
+        }
+      ],
       "open": []
     },
     {
       "id": "003-mainnet-beta",
       "title": "The capped mainnet beta on Robinhood Chain",
-      "done": 0,
-      "total": 0,
-      "phases": [],
+      "done": 93,
+      "total": 95,
+      "phases": [
+        {
+          "name": "Setup",
+          "done": 6,
+          "total": 6
+        },
+        {
+          "name": "Foundational",
+          "done": 47,
+          "total": 47
+        },
+        {
+          "name": "US1 — Put real money in and take it out",
+          "done": 8,
+          "total": 8
+        },
+        {
+          "name": "US2 — Trade a listed token",
+          "done": 16,
+          "total": 16
+        },
+        {
+          "name": "US3 — Told the truth when Chit cannot pay",
+          "done": 3,
+          "total": 3
+        },
+        {
+          "name": "US4 — Keep the free playground",
+          "done": 2,
+          "total": 3
+        },
+        {
+          "name": "Launch",
+          "done": 11,
+          "total": 12
+        }
+      ],
       "open": [
         {
           "id": "T082",
