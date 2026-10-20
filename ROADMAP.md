@@ -8,7 +8,7 @@ Nothing below carries a public date until it is merged. Weeks are planning weeks
 
 **Week 1 of 5** (13 to 19 October 2026). The weekly drop is one-tap links.
 
-**Right now:** one deploy of chit-app on 10 October carried links, the app front door, take profit and stop loss, session-expiry messages and the alerts stack. All five are live and none is announced yet.
+**Right now:** direction changed on 20 October ([docs/direction-2026-10-20.md](docs/direction-2026-10-20.md)): the web app's trading pages are being sunset, the landing page, Sessions and the board stay, and the next build is agents (R67 to R72). The 10 October deploy's five drops are live and still unannounced; the daily posts plan is at marketing/CHIT-DAILY-POSTS-2026-10-16.md.
 
 **Next up:** post the links drop, then the Neon event log and referral store (R11, R14). Take profit and stop loss is posted in week 2, alerts in week 3, each on its own day.
 
@@ -66,6 +66,10 @@ A drop is done at **announced**, nothing earlier.
 | CoinGecko and CoinMarketCap listings | campaign | Founder | planned | the forms |
 | extend(key, expiry) on the next SessionAccount factory, so Renew is one tap | Lucian raised 9 Oct | Founder decision | open | a yes or a no |
 | Tokenized equities from Telegram | R65 | Founder | held | the liquidity and issuer-terms check |
+| Chit agents: one sentence becomes orders, exits first | R67, R68 | Claude, Lucian reviews | planned | docs/direction-2026-10-20.md |
+| Arena: agents and people on one board, season 2 humans vs AI | R69 | Claude, Founder | planned | R67 |
+| Follow an agent, creator share, lock to list, Orus as an outside agent | R70 to R72 | Claude, Lucian | held | fees on, legal check |
+| Web trading pages sunset: redirects, code removal, Sessions carries the pool exit | R73 | Claude | planned | the depositor post, then the 6 Oct wallet's exit or 30 days |
 | "Why did it pump?" on the card, holders only | R66 | Claude | planned | a kill criterion first |
 | Stage 3: the ZK pool, even the operator cannot see the link | Goal.md | later | planned | privacy tech not yet on Robinhood Chain |
 
@@ -89,3 +93,4 @@ Multi-wallet buys at launch to make a token look wanted. Any auto-buy before Oru
 | 2026-10-09 | Lucian's #148 (TP/SL), #149 (expiry), #150 (alerts) merged. #138 reopened, needs rebase. #146 rebased after conflict |
 | 2026-10-10 | This file created. Daily cadence and catalyst posts written (marketing/CHIT-CATALYST-POSTS-2026-10-10.md) |
 | 2026-10-10 | #146 (links, merged main in after #151 to #156) and #147 (front door) merged. chit-app deployed from 00a9edb: links, front door, take profit and stop loss, session expiry, alerts all live. `BOT_LAUNCHPAD_FACTORY` was already set |
+| 2026-10-20 | chit-mainnet Neon quota outage (bot down about an hour), plan upgraded. #165 opened (RPC 10M-block log cap). Direction decided with stakeholders: Telegram only, then agents; docs/direction-2026-10-20.md |
