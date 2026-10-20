@@ -4,7 +4,7 @@ Decided by the founder with the stakeholder group on 20 October 2026 (Marc, algo
 
 ## The two decisions
 
-1. **Sunset the web app's trading pages.** Almost everyone uses the bot. The web app is a second codebase, a second deploy and a second set of bugs for pages hardly anyone opens. The landing page, the Sessions page and the competition board stay. Trading, the fleet dashboard and web deposits go. The screens that still need a screen come back as a Telegram mini app inside the bot.
+1. **Sunset the web app's trading pages, keep the private funding.** The FleetPool is Chit's moat: a deposit goes into a shared pool and the pool funds the trading account, so the chain never shows your wallet funding your trades. That stays, and it moves into the bot (R74 below). Today the bot's session accounts are funded straight from the user's wallet, a public link; that is the gap the pool closes. **Sunset the web app's trading pages.** Almost everyone uses the bot. The web app is a second codebase, a second deploy and a second set of bugs for pages hardly anyone opens. The landing page, the Sessions page and the competition board stay. Trading, the fleet dashboard and web deposits go. The screens that still need a screen come back as a Telegram mini app inside the bot.
 2. **Chit agents.** "Trading bot" no longer explains itself. The next thing is an AI that trades for you inside your own caps, from a session account, never your keys. One sentence in plain words becomes orders the bot already has. Then an arena where agents compete with each other and with people, with $CHIT in the middle.
 
 ## Sunset, in order
@@ -14,12 +14,20 @@ Decided by the founder with the stakeholder group on 20 October 2026 (Marc, algo
 | Freeze web trading features. No new work on trade, fleet dashboard or web deposits. | PR #165 (log cap fix) is the last change to those pages | Founder |
 | Tell web depositors to withdraw. One post in the group and on X: "if you ever deposited on the web app, go to app.chit.tools/app/balance and withdraw." | Posted, pinned for a week | Founder |
 | The 6 October depositor's exit. Wallet `0xe2Ce…3285` requested an exit on 6 October and never executed; about 0.005 ETH waits. Only that wallet can claim it. | The ExitPaid event for that wallet, or 30 days past the post | Chain |
-| Keep /app/balance until then, since it is the only Execute button. Fold the exit into the Sessions page before the balance page goes. | Sessions page shows the pool exit for a wallet with a pending one | Claude |
+| Keep /app/balance until R74 ships, since it is both the only private deposit and the only Execute button. Then the bot carries deposit and exit, and the Sessions page keeps a pool exit for old depositors. | R74 live; Sessions page shows the pool exit for a wallet with a pending one | Claude |
 | Redirect trade, fleet and fleet-dashboard URLs to the bot. Nothing 404s. | vercel.json rewrites; each old URL lands on t.me/… | Claude |
-| Remove the web trading code and its functions (fleet/buy, fleet/trade, fleet/campaign, fleet/control, sweeps that only the web pool used). | `npm run test:fleet` green; chit-app deploys; bot untouched | Claude |
+| Remove the web trading code and its functions (fleet/buy, fleet/trade, fleet/campaign, fleet/control). The pool, its sweep and its posting stay: the bot uses them. | `npm run test:fleet` green; chit-app deploys; bot and pool untouched | Claude |
 | Cost: delete the unused Neon resources (`chit`, `legacy-keeper-db`) after confirming nothing reads them. | Vercel Storage shows only chit-mainnet and chit-fleet | Founder |
 
-What stays on the pool contract: the FleetPool on mainnet keeps working for exits with or without us. It is not upgraded, paused or drained. Depositors' funds are theirs by construction.
+What stays on the pool contract: the FleetPool on mainnet is not upgraded, paused or drained. Depositors' funds are theirs by construction, and exits work with or without us.
+
+## Private funding moves into the bot (R74)
+
+| R | What | Done when | Owner | Gate |
+|---|---|---|---|---|
+| R74 | Fund privately, from the bot. "Fund" offers two ways: direct (today's, one tap, public link, said plainly) and private: deposit into the pool from any wallet, or from any chain through Relay straight into the pool, and after the pool's timer the operator draws the principal to your session account. The chain shows a deposit into a shared pool and, later, the pool funding an account; nothing joins the two. The pool's draw already sends to any account the operator names (`FleetPool.fund` and the principal path take an address list), so this is service and bot work, not a contract change. Caps stay the pool's: 0.1 ETH per depositor, 1 ETH pool, until the audit. | A session account funded through the pool from a fresh wallet; no transaction links the wallet to the account; the bot card says "private, not anonymous: Chit's operator can see which deposit paid for which account" | Claude builds, Lucian reviews the ownerRef sealing | Before the balance page goes. Order: with R67, before fees on |
+
+The claim stays what it was: private, not anonymous. The operator can see which balance paid for which account and says so. Selective disclosure (view keys) is still Stage 3.
 
 ## The bot is open to everyone
 
@@ -43,7 +51,7 @@ Numbering continues from the roadmap build plan (R66 was the last).
 | R72 | Outside agents, Orus first: its own session key on the user's account, with a cap and an expiry. | Orus places one order on a test account that it cannot exceed or outlive | Lucian, with Orus | Orus's side |
 | R65 | Tokenized equities from Telegram. | Unchanged: one page in docs/ with the liquidity and issuer-terms answer | Founder | Legal. Runs in parallel, decides nothing yet |
 
-Order, revised 20 October after the founder's call that the direction runs on fees: fees on is step two, not step five. R67 (one to two weeks) with R68; **fees on (R41 to R44, R50) right after**, since the agents' creator share, the lock and the burn line all wait on it and the $4k only bridges until then; R69 once fees are on; R70 to R72 after. R65 is a check, not a build. Fees on still needs the founder's numbers (R04): the rate, the holder discount, the burn share.
+Order, revised 20 October after the founder's call that the direction runs on fees: fees on is step two, not step five. R67 (one to two weeks) with R68 and R74 (private funding in the bot, the moat); **fees on (R41 to R44, R50) right after**, since the agents' creator share, the lock and the burn line all wait on it and the $4k only bridges until then; R69 once fees are on; R70 to R72 after. R65 is a check, not a build. Fees on still needs the founder's numbers (R04): the rate, the holder discount, the burn share.
 
 ## Cost plan, as agreed
 
@@ -92,3 +100,4 @@ The group asked for daily presence and a push on X. Two posts today, both in the
 |---|---|
 | 2026-10-20 | Decided with stakeholders. This page written. ROADMAP.md "Right now" updated |
 | 2026-10-20 | Founder: the direction runs on fees (fees on moves to step two), the bot opens to everyone (PR #167), no mini app yet, 0G compute checked and parked behind Haiku |
+| 2026-10-20 | Founder: private funding stays, it is the moat. R74 moves the pool deposit into the bot; the balance page stays until then; the pool and its sweep are not removed |

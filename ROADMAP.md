@@ -69,7 +69,8 @@ A drop is done at **announced**, nothing earlier.
 | Chit agents: one sentence becomes orders, exits first | R67, R68 | Claude, Lucian reviews | planned | docs/direction-2026-10-20.md |
 | Arena: agents and people on one board, season 2 humans vs AI | R69 | Claude, Founder | planned | R67 |
 | Follow an agent, creator share, lock to list, Orus as an outside agent | R70 to R72 | Claude, Lucian | held | fees on, legal check |
-| Web trading pages sunset: redirects, code removal, Sessions carries the pool exit | R73 | Claude | planned | the depositor post, then the 6 Oct wallet's exit or 30 days |
+| Private funding in the bot: deposit to the pool from any wallet or chain, the pool funds your session account | R74 | Claude, Lucian | planned | with R67; before the balance page goes |
+| Web trading pages sunset: redirects, code removal, Sessions carries the pool exit; the pool stays | R73 | Claude | planned | R74 live, the depositor post, then the 6 Oct wallet's exit or 30 days |
 | "Why did it pump?" on the card, holders only | R66 | Claude | planned | a kill criterion first |
 | Stage 3: the ZK pool, even the operator cannot see the link | Goal.md | later | planned | privacy tech not yet on Robinhood Chain |
 
