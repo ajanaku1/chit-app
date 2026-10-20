@@ -54,3 +54,8 @@ verify/
 # scripts/fleet-soak.ts. The verdict is what gets recorded in the decision
 # record; two days of samples are working notes, not repository history.
 incidents/soak-*.jsonl
+.vercel
+.env*
+
+# spec-dialogue working material; the spec is the record
+specs/**/design.md
