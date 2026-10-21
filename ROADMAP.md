@@ -72,6 +72,21 @@ A drop is done at **announced**, nothing earlier.
 | Private funding in the bot: deposit to the pool from any wallet or chain, the pool funds your session account | R74 | Claude, Lucian | planned | with R67; before the balance page goes |
 | Web trading pages sunset: redirects, code removal, Sessions carries the pool exit; the pool stays | R73 | Claude | planned | R74 live, the depositor post, then the 6 Oct wallet's exit or 30 days |
 | "Why did it pump?" on the card, holders only | R66 | Claude | planned | a kill criterion first |
+| Sell test before buy, with the tax on the card ([docs/ideas-2026-10-21.md](docs/ideas-2026-10-21.md)) | R75 | unassigned | planned | first of the ideas; beside R67 |
+| Panic button: one tap sells every position | R76 | unassigned | planned | R75 |
+| Position alerts at ±20%, with TP and SL buttons | R77 | unassigned | planned | R75 |
+| Chit in any group: /p shows the card, Buy opens the DM | R78 | unassigned | planned | R76, R77 |
+| Daily recap DM and badges | R79 | unassigned | planned | after R78 |
+| Limits by market cap | R80 | unassigned | planned | after R78 |
+| Watch any wallet, alert only | R81 | unassigned | planned | after R78 |
+| Trending on chit: page and daily post | R82 | unassigned | planned | after R78 |
+| Weekly rug report | R83 | unassigned | held | #164 merged |
+| Trading modes: safe and degen | R84 | unassigned | planned | after R78 |
+| Project page for verified devs | R85 | unassigned | held | a moderation rule |
+| Buyback-as-a-service, a cut burns $CHIT | R86 | Founder decides, Claude designs | held | R89, a contract review, legal on the cut |
+| Card on-ramp, through Base and Relay | R87 | Founder | held | a partner |
+| "Will it graduate?" points game in groups | R88 | unassigned | planned | R78 |
+| Read: does a session key's buy check where the tokens go? | R89 | Claude reads, Lucian reviews | open | before R86 or any new trade path |
 | Stage 3: the ZK pool, even the operator cannot see the link | Goal.md | later | planned | privacy tech not yet on Robinhood Chain |
 
 ## Never
@@ -95,3 +110,4 @@ Multi-wallet buys at launch to make a token look wanted. Any auto-buy before Oru
 | 2026-10-10 | This file created. Daily cadence and catalyst posts written (marketing/CHIT-CATALYST-POSTS-2026-10-10.md) |
 | 2026-10-10 | #146 (links, merged main in after #151 to #156) and #147 (front door) merged. chit-app deployed from 00a9edb: links, front door, take profit and stop loss, session expiry, alerts all live. `BOT_LAUNCHPAD_FACTORY` was already set |
 | 2026-10-20 | chit-mainnet Neon quota outage (bot down about an hour), plan upgraded. #165 opened (RPC 10M-block log cap). Direction decided with stakeholders: Telegram only, then agents; docs/direction-2026-10-20.md |
+| 2026-10-21 | #169 (burn page: buyback logs in spans under the RPC's caps) merged, deployed to chit-app and chit-testnet; chit.tools/burn live again. Ideas R75 to R89 checked against the code and added (docs/ideas-2026-10-21.md); TP ladder folded into R67, gift a bag dropped |
