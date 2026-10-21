@@ -148,6 +148,20 @@
  *                                only, so on testnet nothing is asked or shown
  *   BOT_HEY_OFF                  1 hides the HEY line and stops the asks
  *   HEY_API_BASE                 default https://heyresearch.xyz
+ *   ANTHROPIC_API_KEY            the sentence desk (specs/006-agent-sentences):
+ *                                plain text in the DM becomes a Proposed card.
+ *                                Without it the desk is not built and free
+ *                                text keeps today's hint. Added by the founder
+ *   BOT_SENTENCES_OFF            1 disables the desk without removing the key
+ *   BOT_SENTENCE_MODEL           model id; default claude-haiku-5-5
+ *   BOT_SENTENCE_DAILY           sentences per trader per UTC day, one limit
+ *                                for everyone; default 20
+ *   BOT_SENTENCE_SPEND_ALERT_USD the day's spend that sends one alert to
+ *                                MONITOR_CHAT_ID; default 20
+ *   BOT_SENTENCE_PRICE_IN,       USD per million input and output tokens for
+ *   BOT_SENTENCE_PRICE_OUT       the spend accounting; default Haiku's list
+ *                                price. BOT_KEY_SECRET also keys the sentence
+ *                                HMAC; no sentence text is stored or logged
  *   FLEET_CHAIN_ID, FLEET_RPC_URL, FLEET_POOL_ADDRESS, FLEET_TOKEN_ALLOWLIST
  *                                as for the service; the first allowlisted
  *                                token is the one the bot trades
