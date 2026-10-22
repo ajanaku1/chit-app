@@ -11,14 +11,14 @@ import { test } from "node:test";
 import { type Address, parseEther } from "viem";
 import type { BotChain } from "../../src/fleet/bot-chain.js";
 import { MemoryBotLinkStore } from "../../src/fleet/bot-link.js";
-import { buildExit, type OrderBuildDeps } from "../../src/fleet/bot-order-build.js";
-import { MemoryOrderStore, type Order } from "../../src/fleet/bot-orders.js";
+import { CEILING, SHIELD_ON, buildExit, buildShield, type OrderBuildDeps } from "../../src/fleet/bot-order-build.js";
+import { MAX_OPEN_ORDERS, MemoryOrderStore, newOrderId, type Order } from "../../src/fleet/bot-orders.js";
 import { MemoryPositionLedger } from "../../src/fleet/bot-positions.js";
 import { sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
 import { MemorySentenceStore } from "../../src/fleet/bot-sentence-store.js";
 import { FakeTranslator, type Proposal, type TranslationResult } from "../../src/fleet/bot-sentence-translate.js";
 import { ALL_OF_IT } from "../../src/fleet/bot-sentence-questions.js";
-import { LINES, SentenceDesk } from "../../src/fleet/bot-sentences.js";
+import { CARD_MS, LINES, SentenceDesk, sweepCards } from "../../src/fleet/bot-sentences.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
@@ -42,6 +42,12 @@ const S = {
   at50: "pepe at 50%",
   some: "buy some pepe",
   noEvery: "buy 0.005 eth of pepe 4 times",
+  doge: "sell my doge",
+  over: "sell 150% of my pepe at 2x",
+  tp3x: "sell all my pepe at 3x",
+  sl20: "stop loss all my pepe at -20%",
+  shield: "shield my pepe",
+  big: "buy 0.2 eth of pepe when it dips 10%",
 };
 const MAP: Record<string, TranslationResult> = {
   [S.both]: { kind: "orders", proposals: [HALF_2X, REST_30] },
@@ -53,22 +59,32 @@ const MAP: Record<string, TranslationResult> = {
   [S.twoPepes]: { kind: "orders", proposals: [{ kind: "sl", tokenText: "pepe", size: { pct: 100 }, level: { percent: -20 } }] },
   [S.at50]: { kind: "question", missing: "direction", draft: [{ kind: "tp", tokenText: "pepe", level: { percent: 50 } }] },
   [S.some]: { kind: "orders", proposals: [{ kind: "limit", tokenText: "pepe" }] },
+  [S.doge]: { kind: "orders", proposals: [{ kind: "sl", tokenText: "doge", size: { pct: 100 }, level: { percent: -20 } }] },
+  [S.over]: { kind: "orders", proposals: [{ kind: "tp", tokenText: "pepe", size: { pct: 150 }, level: { multiple: 2 } }] },
+  [S.tp3x]: { kind: "orders", proposals: [{ kind: "tp", tokenText: "pepe", size: { pct: 100 }, level: { multiple: 3 } }] },
+  [S.sl20]: { kind: "orders", proposals: [{ kind: "sl", tokenText: "pepe", size: { pct: 100 }, level: { percent: -20 } }] },
+  [S.shield]: { kind: "orders", proposals: [{ kind: "shield", tokenText: "pepe" }] },
+  [S.big]: { kind: "orders", proposals: [{ kind: "limit", tokenText: "pepe", size: { eth: "0.2" }, level: { percent: -10 } }] },
   [S.noEvery]: { kind: "orders", proposals: [{ kind: "dca", tokenText: "pepe", size: { eth: "0.005" }, count: 4 }] },
 };
 
 const setup = async (o: { twoPepes?: boolean } = {}) => {
   let now = clock;
+  const price = { pepe: PER_ETH };
+  const st = { exists: true, paused: false, revoked: false, expiry: Math.floor(clock.getTime() / 1000) + 86_400, maxValuePerCall: parseEther("0.05").toString(), totalValueCap: parseEther("0.5").toString(), spentValue: "0", calls: 0 };
+  const connects: string[] = [];
   const reads = {
     chainId: 4663, router: "0x8876789976decbfcbbbe364623c63652db8c0904",
-    async tokenInfo(token: Address) { const sym = token === PEPE || token === PEPE2 ? "PEPE" : token === WIF ? "WIF" : "DRY"; return { address: token, symbol: sym, decimals: 6, hasPool: token !== DRY, perEth: token === WIF ? 2n * PER_ETH : PER_ETH, poolEth: parseEther("5"), hooked: false, fee: 3000, poolOnRecord: token !== DRY }; },
+    async tokenInfo(token: Address) { const sym = token === PEPE || token === PEPE2 ? "PEPE" : token === WIF ? "WIF" : "DRY"; return { address: token, symbol: sym, decimals: 6, hasPool: token !== DRY, perEth: token === WIF ? 2n * PER_ETH : token === PEPE ? price.pepe : PER_ETH, poolEth: parseEther("5"), hooked: false, fee: 3000, poolOnRecord: token !== DRY }; },
     async tokenBalance(token: Address) { return token === PEPE ? 42_000_000n : token === PEPE2 ? 7_000_000n : 0n; },
     async quoteSell(_t: Address, tokensIn: bigint) { return (tokensIn * 10n ** 18n) / PER_ETH; },
   } as unknown as BotChain;
   const session = {
     chainId: 4663,
-    async canExecute() { return { ok: true, why: "" }; },
+    async sessionOf() { return st; },
+    async canExecute() { return st.paused ? { ok: false, why: "paused" } : { ok: true, why: "" }; },
     async sellAllowed() { return true; },
-    async canSell(_a: Address, _r: Address, poolKey: { currency1?: Address } | undefined, _in: bigint, minOut: bigint) { const early = sellPreflight(poolKey?.currency1 ?? PEPE, poolKey as never, minOut); return early ? { ok: false, why: early } : { ok: true, why: "" }; },
+    async canSell(_a: Address, _r: Address, poolKey: { currency1?: Address } | undefined, _in: bigint, minOut: bigint) { const early = sellPreflight(poolKey?.currency1 ?? PEPE, poolKey as never, minOut); return early ? { ok: false, why: early } : st.paused ? { ok: false, why: "paused" } : { ok: true, why: "" }; },
   } as unknown as SessionChain;
   const orders = new MemoryOrderStore();
   const build: OrderBuildDeps = { reads, session, orders, siteUrl: "https://chit.tools", sellSlippageBps: 300, now: () => now };
@@ -80,8 +96,8 @@ const setup = async (o: { twoPepes?: boolean } = {}) => {
   const translator = new FakeTranslator(MAP);
   const store = new MemorySentenceStore();
   const hints: string[] = [];
-  const desk = new SentenceDesk({ translator, store, telegram, links, positions, build, secret: "s", hint: async (c) => { hints.push(c); }, connect: async () => undefined });
-  return { desk, telegram, orders, translator, store, build, hints, later: (ms: number) => { now = new Date(now.getTime() + ms); } };
+  const desk = new SentenceDesk({ translator, store, telegram, links, positions, build, secret: "s", hint: async (c) => { hints.push(c); }, connect: async (c) => { connects.push(c); } });
+  return { desk, telegram, orders, translator, store, build, hints, links, price, st, connects, later: (ms: number) => { now = new Date(now.getTime() + ms); } };
 };
 
 type Sent = { kind: string; text: string; messageId?: number; keyboard?: { text: string; callback_data?: string }[][] };
@@ -253,4 +269,102 @@ test("FR-012a: a DCA with no interval asks hourly, daily or weekly; a tap after 
   await desk.handleText("7", "7", S.noEvery);
   later(10 * 60_000);
   assert.equal(await desk.handleCallback("7", "7", "sq:7:0"), LINES.questionGone);
+});
+
+const putExit = async (build: OrderBuildDeps, orders: MemoryOrderStore, kind: "tp" | "sl", move: number) => {
+  const b = await buildExit(build, { tgId: "7", account: ACCOUNT, token: PEPE, kind, move, pct: 100 }, { again: "", buttons: [] });
+  assert.ok(b.ok); await orders.put(b.order); return b.order;
+};
+
+test("US3 scenarios 1 and 2: a sell of a token not held is refused with the fact; 150% is clamped and said", async () => {
+  const { desk, telegram } = await setup();
+  await desk.handleText("7", "7", S.doge);
+  assert.equal(lastSent(telegram).text, "you hold no DOGE in this account.");
+  await desk.handleText("7", "7", S.over);
+  assert.match(lastSent(telegram).text, /sell <code>100%<\/code>/); assert.ok(lastSent(telegram).text.includes(LINES.clamped));
+});
+
+test("US3 scenario 3: an open take profit is named and offers Replace, Add both, Cancel; Replace closes it, Add both keeps it; another kind sits beside", async () => {
+  const { desk, telegram, orders, build } = await setup();
+  const old = await putExit(build, orders, "tp", 50);
+  await desk.handleText("7", "7", S.tp3x);
+  assert.match(lastSent(telegram).text, /<i>open now: 🎯 take profit/);
+  assert.deepEqual(labels(telegram), ["Replace", "Add both", "Cancel"]);
+  assert.equal(await desk.handleCallback("7", "7", `sc:${cardId(telegram)}:rep`), undefined);
+  assert.deepEqual((await open(orders)).map((o) => [o.kind, o.id === old.id]), [["tp", false]], "the old one closed, the new one open");
+  await desk.handleText("7", "7", S.tp3x);
+  await desk.handleCallback("7", "7", `sc:${cardId(telegram)}:add`);
+  assert.equal((await open(orders)).filter((o) => o.kind === "tp").length, 2, "Add both keeps both");
+  await desk.handleText("7", "7", S.sl20);
+  assert.deepEqual(labels(telegram), ["Confirm", "Cancel"], "a stop loss beside take profits is no question");
+});
+
+test("US3 scenario 4: a second shield on the token is already on", async () => {
+  const { desk, telegram, orders, build } = await setup();
+  const b = await buildShield(build, { tgId: "7", account: ACCOUNT, token: PEPE });
+  assert.ok(b.ok); await orders.put(b.order);
+  await desk.handleText("7", "7", S.shield);
+  assert.equal(lastSent(telegram).text, SHIELD_ON);
+});
+
+test("US3 scenarios 5 and 6: a 6% move at Confirm re-renders with new levels and places nothing; the next Confirm places at them, once", async () => {
+  const { desk, telegram, orders, price } = await setup();
+  await desk.handleText("7", "7", S.both);
+  const id = cardId(telegram);
+  price.pepe = (PER_ETH * 94n) / 100n;
+  assert.equal(await desk.handleCallback("7", "7", `sc:${id}:ok`), LINES.moved);
+  const again = lastSent(telegram);
+  assert.equal(again.kind, "edit"); assert.ok(again.text.includes(LINES.moved));
+  assert.deepEqual(again.keyboard!.flat().map((b) => b.text), ["Confirm", "Cancel"]);
+  assert.equal((await open(orders)).length, 0);
+  await desk.handleCallback("7", "7", `sc:${id}:ok`);
+  assert.deepEqual((await open(orders)).map((o) => o.triggerPerEth), [(price.pepe * 10_000n) / 20_000n, (price.pepe * 10_000n) / 7_000n], "levels from the new price");
+  assert.equal(await desk.handleCallback("7", "7", `sc:${id}:ok`), LINES.already);
+  assert.equal((await open(orders)).length, 2);
+});
+
+test("US3 scenario 7: a tap after ten minutes is expired and places nothing; the sweep expires old cards in the message and leaves a fresh one", async () => {
+  const { desk, telegram, orders, store, later } = await setup();
+  await desk.handleText("7", "7", S.both);
+  const id = cardId(telegram);
+  later(CARD_MS);
+  assert.equal(await desk.handleCallback("7", "7", `sc:${id}:ok`), LINES.expired);
+  assert.equal(lastSent(telegram).text, LINES.expired); assert.deepEqual(lastSent(telegram).keyboard, []);
+  assert.equal((await open(orders)).length, 0);
+  const at = (min: number) => new Date(clock.getTime() + min * 60_000).toISOString();
+  const card = (chatId: string, createdAt: string) => ({ chatId, tgId: chatId, sentenceHash: "h", token: PEPE, perEthAtCard: PER_ETH, proposals: [], createdAt });
+  for (const [chat, created, msg] of [["8", at(0), 41], ["9", at(1), 42], ["10", at(14), 43]] as const) { const c = await store.createCard(card(chat, created)); await store.setMessage(c!.id, msg); }
+  const sent = telegram.sent.length;
+  assert.equal(await sweepCards(store, telegram, new Date(at(15))), 2);
+  assert.deepEqual(telegram.sent.slice(sent).map((o) => (o as Sent).messageId), [41, 42]);
+  assert.equal((await store.proposedIn("10"))?.chatId, "10");
+});
+
+test("US3 scenarios 8 and 9: a paused session takes the orders and says they wait; an expired session or no account gets Connect", async () => {
+  const { desk, telegram, orders, st, connects, links } = await setup();
+  st.paused = true;
+  await desk.handleText("7", "7", S.both);
+  assert.ok(lastSent(telegram).text.endsWith(LINES.waits));
+  await desk.handleCallback("7", "7", `sc:${cardId(telegram)}:ok`);
+  assert.equal((await open(orders)).length, 2, "placed although the session would refuse a trade now");
+  assert.match(lastSent(telegram).text, /placed\. manage in Positions\.\nwill wait until you resume\.$/);
+  st.paused = false; st.expiry = Math.floor(clock.getTime() / 1000) - 1;
+  const before = telegram.sent.length;
+  await desk.handleText("7", "7", S.both);
+  links.links.delete("7");
+  await desk.handleText("7", "7", S.both);
+  assert.deepEqual(connects, ["7", "7"]); assert.equal(telegram.sent.length, before, "no card");
+});
+
+test("US3 scenario 10 and the ceiling: a buy over the per-trade cap is cut to it and says so; a zero cap refuses; ten open orders refuse the card", async () => {
+  const { desk, telegram, orders, st } = await setup();
+  await desk.handleText("7", "7", S.big);
+  assert.match(lastSent(telegram).text, /limit buy <code>0\.05 ETH<\/code>/); assert.ok(lastSent(telegram).text.includes("your session allows 0.05 ETH a trade, so 0.05 ETH"));
+  st.maxValuePerCall = "0";
+  await desk.handleText("7", "7", S.big);
+  assert.equal(lastSent(telegram).text, LINES.noCap);
+  for (let i = 0; i < MAX_OPEN_ORDERS - 1; i++) await orders.put({ id: newOrderId(), tgId: "7", account: ACCOUNT, chainId: 4663, token: WIF, kind: "limit", ethWei: 1n, triggerPerEth: 1n, createdAt: clock.toISOString(), status: "open", refusals: 0 });
+  await desk.handleText("7", "7", S.both);
+  assert.equal(lastSent(telegram).text, CEILING, "nine open and two on the card is past ten");
+  noPersona(telegram);
 });
