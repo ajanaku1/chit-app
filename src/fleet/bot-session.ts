@@ -175,6 +175,8 @@ const SELL_GAS_WEI = sellGasWei();
 export const MIRRORS_UNTIL_MS = 50_000;
 /** What a tap is told while the same person's last buy or sell is still going (2026-10-06: Sell 50% tapped five times sold five times). */
 const BUSY = "still working on your last trade. wait for its answer.";
+/** FR-025: said on the about text and the privacy page (app/fleet-privacy.html), on no card. */
+export const SENTENCE_DISCLOSURE = "a sentence you type is read once by an outside AI service to write the card; the words are not kept.";
 /** How long Positions waits for ETH's dollar price before showing ETH alone. */
 const USD_WAIT_MS = 3_000;
 const USD_PEEK_MS = 300;
@@ -558,6 +560,8 @@ export class SessionBot {
       "the key stays with you. link a session account once, then paste any token's address and buy from your account in one tap.",
       "sell from the token card too, once you turn on let it sell next to the bot's key on the Sessions page. a sale is one call on your account: the ETH lands in your account, nothing stays approved after it, and turning let it sell off is complete. the pool and the floor are the key's, so the flag trusts the bot's key with the position, not only the caps. withdrawals and fleets are yours to do from the app in this beta.",
       "/link to connect or re-link. /start for your card." + (this.#d.comp ? " /competition for how to enter the trading competition, /board for the standings, /bug to report what broke." : ""),
+      // sentences: the disclosure the spec puts on the about text and the privacy page, never on a card (FR-025).
+      ...(this.#sentences ? [`or type what you want, like "sell half my pepe at 2x", and confirm the card. ${SENTENCE_DISCLOSURE}`] : []),
     ].join("\n"), kb([btn("← Back", "home")]));
   }
 

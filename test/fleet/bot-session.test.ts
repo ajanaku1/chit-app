@@ -1378,6 +1378,7 @@ test("sentences: free DM text reaches the desk only when it is configured, never
   await on.bot.handle(dm(said));
   assert.deepEqual(translator.calls, [said], "translated once");
   assert.match(on.telegram.last(), /chit bot on mainnet/, "not an instruction: the ordinary hint");
+  assert.ok(on.telegram.last().includes("read once by an outside AI service to write the card; the words are not kept."), "the about text says who reads a sentence (FR-025)");
   await on.bot.handle({ message: { message_id: 2, text: said, chat: { id: -100, type: "supergroup" }, from: { id: 7 } } });
   await on.bot.handle(dm("/nope"));
   assert.equal(translator.calls.length, 1, "a group sentence and a command never reach the desk");
@@ -1387,4 +1388,5 @@ test("sentences: free DM text reaches the desk only when it is configured, never
   await linked(off.links);
   await off.bot.handle(dm(said));
   assert.match(off.telegram.last(), /chit bot on mainnet/, "without the desk, free text keeps the hint");
+  assert.ok(!off.telegram.last().includes("outside AI service"), "and says nothing about a service it does not use");
 });
