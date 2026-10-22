@@ -164,7 +164,7 @@ export const cardText = (card: SentenceCard, c: Candidate, cut: boolean, tailLin
 ].join("\n");
 
 /** Confirm and Cancel, or Replace, Add both and Cancel when the card names an open order of the same kind (FR-013). */
-const cardKeys = (card: SentenceCard): ReturnType<typeof kb> => card.existingOrderId
+const cardKeys = (card: SentenceCard): Keyboard => card.existingOrderId
   ? kb([btn("Replace", `sc:${card.id}:rep`), btn("Add both", `sc:${card.id}:add`), btn("Cancel", `sc:${card.id}:no`)])
   : kb([btn("Confirm", `sc:${card.id}:ok`), btn("Cancel", `sc:${card.id}:no`)]);
 
@@ -178,11 +178,16 @@ const reprice = (p: StoredProposal, perEth: bigint): StoredProposal => {
 /** Paused, the orders are taken and wait (FR-016): the session's answer for this trade is not asked; every other check is. */
 const waiting = (s: SessionChain): SessionChain => ({ ...s, canExecute: async () => ({ ok: true, why: "" }), canSell: async () => ({ ok: true, why: "" }) });
 
+/** A message the desk sent, said again in place; no buttons unless given. A message that was never sent is left alone. */
+const editIn = async (telegram: Telegram, chatId: string, messageId: number | undefined, text: string, keyboard: Keyboard = kb()): Promise<void> => {
+  if (messageId !== undefined) await telegram.deliver({ kind: "edit", chatId, messageId, text, keyboard });
+};
+
 /** The orders cron's sweep (research R5): every Proposed card past its ten minutes becomes expired, in the message too. */
 export const sweepCards = async (store: SentenceStore, telegram: Telegram, now: Date): Promise<number> => {
   const stale = await store.expireStale(new Date(now.getTime() - CARD_MS), now);
   for (const c of stale) {
-    if (c.messageId !== undefined) await telegram.deliver({ kind: "edit", chatId: c.chatId, messageId: c.messageId, text: LINES.expired, keyboard: kb() }).catch(() => undefined);
+    await editIn(telegram, c.chatId, c.messageId, LINES.expired).catch(() => undefined);
   }
   return stale.length;
 };
@@ -277,8 +282,7 @@ export class SentenceDesk {
   async #expireOpen(chatId: string): Promise<void> {
     await this.#d.store.dropPending(chatId);
     const open = await this.#d.store.proposedIn(chatId);
-    if (!open || !(await this.#d.store.transition(open.id, "expired", this.#now)) || open.messageId === undefined) return;
-    await this.#d.telegram.deliver({ kind: "edit", chatId, messageId: open.messageId, text: LINES.expired, keyboard: kb() });
+    if (open && (await this.#d.store.transition(open.id, "expired", this.#now))) await editIn(this.#d.telegram, chatId, open.messageId, LINES.expired);
   }
 
   /** The tokens the account has traded, from the ledger, with the chain's balance and price for each now. */
@@ -370,7 +374,7 @@ export class SentenceDesk {
   async #answer(chatId: string, tgId: string, data: string, messageId: number | undefined): Promise<string | undefined> {
     const [, chatKey, pick = ""] = data.split(":");
     if (chatKey !== chatId) return LINES.questionGone;
-    const edit = (text: string) => (messageId === undefined ? undefined : this.#d.telegram.deliver({ kind: "edit", chatId, messageId, text, keyboard: kb() }));
+    const edit = (text: string) => editIn(this.#d.telegram, chatId, messageId, text);
     if (pick === "x") { await this.#d.store.dropPending(chatId); await edit(LINES.cancelled); return undefined; }
     const got = await this.#d.store.consumePending(chatId, this.#now);
     if (!got || "expired" in got || got.question.tgId !== tgId) return LINES.questionGone;
@@ -392,8 +396,8 @@ export class SentenceDesk {
     return state === "placed" ? LINES.already : state === "cancelled" ? LINES.cancelled : LINES.expired;
   }
 
-  async #edit(card: SentenceCard, text: string, keyboard: ReturnType<typeof kb> = kb()): Promise<void> {
-    if (card.messageId !== undefined) await this.#d.telegram.deliver({ kind: "edit", chatId: card.chatId, messageId: card.messageId, text, keyboard });
+  async #edit(card: SentenceCard, text: string, keyboard: Keyboard = kb()): Promise<void> {
+    await editIn(this.#d.telegram, card.chatId, card.messageId, text, keyboard);
   }
 
   async #cancel(card: SentenceCard): Promise<string | undefined> {
