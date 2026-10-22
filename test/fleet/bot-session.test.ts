@@ -32,6 +32,10 @@ import { MemoryPositionLedger } from "../../src/fleet/bot-positions.js";
 import { MemoryCompStore } from "../../src/fleet/bot-comp.js";
 import type { OrusScan } from "../../src/fleet/bot-orus.js";
 import { SessionBot, parseTokenLink, referralCodeFor } from "../../src/fleet/bot-session.js";
+import { MemoryOrderStore } from "../../src/fleet/bot-orders.js";
+import { MemorySentenceStore } from "../../src/fleet/bot-sentence-store.js";
+import { FakeTranslator } from "../../src/fleet/bot-sentence-translate.js";
+import { LINES } from "../../src/fleet/bot-sentences.js";
 import type { SessionSell } from "../../src/fleet/session-keys.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 import { revertWords, sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
@@ -1364,4 +1368,23 @@ test("rug shield: offered over a position only while the risk watch runs; one ta
   await bot.handle(tap("orders"));
   assert.match(telegram.last(), /1\. 🛡 rug shield: sell all your <b>PEPE<\/b>/);
   assert.equal(session.sales.length, 0, "setting a shield sells nothing");
+});
+
+test("sentences: free DM text reaches the desk only when it is configured, never from a group, never as a command; sc: taps reach it too", async () => {
+  const said = "sell half my pepe at 2x";
+  const translator = new FakeTranslator({});
+  const on = setup({ orders: new MemoryOrderStore(), positions: new MemoryPositionLedger(), sentences: { translator, store: new MemorySentenceStore(), secret: "s" } });
+  await linked(on.links);
+  await on.bot.handle(dm(said));
+  assert.deepEqual(translator.calls, [said], "translated once");
+  assert.match(on.telegram.last(), /chit bot on mainnet/, "not an instruction: the ordinary hint");
+  await on.bot.handle({ message: { message_id: 2, text: said, chat: { id: -100, type: "supergroup" }, from: { id: 7 } } });
+  await on.bot.handle(dm("/nope"));
+  assert.equal(translator.calls.length, 1, "a group sentence and a command never reach the desk");
+  await on.bot.handle(tap("sc:0123456789abcdef:ok"));
+  assert.deepEqual(on.telegram.sent.at(-1), { kind: "answer", callbackId: "cb", text: LINES.expired });
+  const off = setup({ orders: new MemoryOrderStore(), positions: new MemoryPositionLedger() });
+  await linked(off.links);
+  await off.bot.handle(dm(said));
+  assert.match(off.telegram.last(), /chit bot on mainnet/, "without the desk, free text keeps the hint");
 });

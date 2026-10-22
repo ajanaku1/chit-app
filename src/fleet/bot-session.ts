@@ -55,6 +55,9 @@ import type { CopyDesk } from "./bot-copy.js";
 import { CopyCards } from "./bot-copy-cards.js";
 import { heyLine, type HeyScanner } from "./bot-hey.js";
 import { issueNonce, type BotLinkStore } from "./bot-link.js";
+import { SentenceDesk } from "./bot-sentences.js";
+import type { SentenceStore } from "./bot-sentence-store.js";
+import type { Translator } from "./bot-sentence-translate.js";
 import { buildBuy, buildExit, buildShield, btn, eth, fmt, kb, orderLine, permit2FixedCard, permit2FixedSale, toUnits, url, type OrderBuildDeps, type Retry } from "./bot-order-build.js";
 import type { Order, OrderStore } from "./bot-orders.js";
 import { orusLine, type OrusScanner } from "./bot-orus.js";
@@ -102,6 +105,8 @@ export type SessionBotDeps = {
   shields?: boolean;
   /** Big-buy alerts (bot-alerts.ts): the user's line, read by the watcher's cron; absent, no 🔔 Alerts button. */
   alerts?: AlertStore;
+  /** The sentence desk (bot-sentences.ts): plain DM text becomes a Proposed card; needs orders and positions too. Absent, free text gets the hint. */
+  sentences?: { translator: Translator; store: SentenceStore; secret: string };
   botUsername: string;
   siteUrl: string;
   /** Per user, per UTC day: how many executes and how much gas the bot fronts. */
@@ -195,6 +200,7 @@ export class SessionBot {
   readonly #alerts: AlertCards | undefined;
   readonly #updates: UpdateClaims;
   readonly #locks: TradeLocks;
+  readonly #sentences: SentenceDesk | undefined;
 
   constructor(d: SessionBotDeps) {
     this.#d = d;
@@ -204,6 +210,10 @@ export class SessionBot {
     this.#copy = d.copy ? new CopyCards({ copy: d.copy, telegram: d.telegram, siteUrl: d.siteUrl, budget: async (tgId) => this.#charge(tgId) ?? d.copy!.chargeDay(tgId), ...(d.orus ? { orus: d.orus } : {}), ...(d.hey ? { hey: d.hey } : {}) }) : undefined;
     // alerts: the card writes the subscription; the watcher's cron sends the alerts (bot-alert-cards.ts).
     this.#alerts = d.alerts ? new AlertCards({ store: d.alerts, telegram: d.telegram }) : undefined;
+    // sentences: the desk places through the same preflight as the buttons (this.#build) and answers non-instructions with the same hint.
+    this.#sentences = d.sentences && d.orders && d.positions
+      ? new SentenceDesk({ ...d.sentences, telegram: d.telegram, links: d.links, positions: d.positions, build: this.#build(d.orders), hint: (chatId) => this.#help(chatId), connect: (chatId, tgId) => this.#connect(chatId, tgId) })
+      : undefined;
   }
 
   get #now(): Date { return this.#d.now ? this.#d.now() : new Date(); }
@@ -262,6 +272,8 @@ export class SessionBot {
       }
       const pasted = text.match(/0x[0-9a-fA-F]{40}/)?.[0];
       if (pasted) return this.#tokenCard(chatId, tgId, pasted.toLowerCase() as Address);
+      // sentences: anything left that is not a command is a sentence (FR-001); group chats returned above (FR-017).
+      if (this.#sentences && !text.startsWith("/")) return this.#sentences.handleText(chatId, tgId, text);
       return this.#help(chatId);
     }
     const q = u.callback_query;
@@ -276,6 +288,8 @@ export class SessionBot {
     if (this.#copy?.owns(verb ?? "")) { await ack(); return this.#copy.callback(chatId, tgId, verb!, a, q.from); }
     // alerts: the card, on, off and the line prompt (bot-alert-cards.ts).
     if (this.#alerts?.owns(verb ?? "")) { await ack(); return this.#alerts.callback(chatId, tgId, verb!, a); }
+    // sentences: Confirm and Cancel on a card, answers to its question (contracts/callbacks.md); the toast is the desk's.
+    if (this.#sentences && (verb === "sc" || verb === "sq")) { await ack(await this.#sentences.handleCallback(chatId, tgId, data)); return; }
     switch (verb) {
       case "home": await ack(); return this.#home(chatId, tgId, messageId);
       // A tap that lands while the last read is still going is answered and dropped: one read per person, and no pile of them on the RPC.

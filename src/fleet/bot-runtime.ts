@@ -189,6 +189,8 @@ import { createTelegram } from "./bot-telegram.js";
 import { MemoryBotWalletStore, NeonBotWalletStore, secretIsStrong, type BotWalletStore } from "./bot-wallets.js";
 import { MemoryBotLinkStore, NeonBotLinkStore, type BotLinkStore } from "./bot-link.js";
 import { MemoryOrderStore, NeonOrderStore, type OrderStore } from "./bot-orders.js";
+import { MemorySentenceStore, NeonSentenceStore } from "./bot-sentence-store.js";
+import { createAnthropicTranslator } from "./bot-sentence-translate.js";
 import { createSessionChain } from "./bot-session-chain.js";
 import { SessionBot, type SessionBotDeps } from "./bot-session.js";
 import type { CopyStore } from "./bot-copy.js";
@@ -334,6 +336,25 @@ const boardFromSite = (site: string) => async (): Promise<BoardLike> => {
   return (await r.json()) as BoardLike;
 };
 
+/**
+ * The sentence desk's model and tables (specs/006 contracts/env.md): built only with ANTHROPIC_API_KEY set and
+ * BOT_SENTENCES_OFF not 1, and only with BOT_KEY_SECRET to key the hash; otherwise free text keeps the hint.
+ */
+const sentencesFromEnv = (): SessionBotDeps["sentences"] => {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey || process.env.BOT_SENTENCES_OFF === "1") return undefined;
+  const secret = process.env.BOT_KEY_SECRET;
+  if (!secret) { warnOnce("sentences", "ANTHROPIC_API_KEY is set but BOT_KEY_SECRET is not: the sentence desk needs it to hash sentences, so it is off"); return undefined; }
+  const translator = createAnthropicTranslator({ apiKey, model: process.env.BOT_SENTENCE_MODEL?.trim() || "claude-haiku-5-5", fetch: (input, init) => fetch(input, init) });
+  const url = process.env.DATABASE_URL;
+  if (url) {
+    const sql = neon(url);
+    return { translator, secret, store: new NeonSentenceStore({ query: (query, params) => sql.query(query, params) as Promise<readonly Record<string, unknown>[]> }) };
+  }
+  if (process.env.BOT_MEMORY_STORE !== "1") refuse("DATABASE_URL is not set (BOT_MEMORY_STORE=1 allows a per-instance memory store on one machine only)");
+  return { translator, secret, store: new MemorySentenceStore() };
+};
+
 /** Session mode's standing orders (limit buys, DCA); the same store rule as the links. BOT_ORDERS_OFF=1 offers none. */
 const ordersFromEnv = (): OrderStore | undefined => {
   if (process.env.BOT_ORDERS_OFF === "1") return undefined;
@@ -388,6 +409,7 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
   if (launchpad && !isAddress(launchpad)) refuse("BOT_LAUNCHPAD_FACTORY must be the launchpad factory's address");
   const launchClient = launchpad ? createPublicClient({ transport: http(rpcUrl) }) : undefined;
   const launch = launchpad && launchClient ? createLaunchCheck({ factory: launchpad as Address, readContract: (args) => launchClient.readContract(args as never) }) : undefined;
+  const sentences = sentencesFromEnv();
   const deps: SessionBotDeps = {
     reads,
     session: overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as `0x${string}` }),
@@ -409,6 +431,7 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
     ...(alerts ? { alerts } : {}),
     ...(dailyExecutes !== undefined ? { dailyExecutes } : {}),
     ...(dailyGasWei !== undefined ? { dailyGasWei } : {}),
+    ...(sentences ? { sentences } : {}),
     positions: positionLedgerFromEnv(),
     comp: compFromEnv(),
     bugs: { store: bugsFromEnv(), ...(process.env.MONITOR_CHAT_ID?.trim() ? { operatorChatId: process.env.MONITOR_CHAT_ID.trim() } : {}) },
