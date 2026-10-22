@@ -160,6 +160,7 @@ export const createAnthropicTranslator = (config: AnthropicConfig): Translator =
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.budgetMs ?? BUDGET_MS);
     try {
+      const response = await config.fetch(config.url ?? "https://api.anthropic.com/v1/messages", {
         method: "POST",
         signal: controller.signal,
         headers: { "content-type": "application/json", "x-api-key": config.apiKey, "anthropic-version": "2023-06-01" },

@@ -53,9 +53,10 @@ test("a token resolves by symbol among the held; an address the model wrote reso
 const reply = (body: unknown, status = 200): typeof fetch => (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
 
 test("the Anthropic call forces the one tool and reads its input; a miss or no tool block is none, marked malformed", async () => {
-  let sent: { tool_choice?: unknown; tools?: { name: string }[]; max_tokens?: number } = {};
-  const ok = createAnthropicTranslator({ apiKey: "k", model: "m", fetch: (async (_u: string, init: RequestInit) => { sent = JSON.parse(String(init.body)); return new Response(JSON.stringify({ content: [{ type: "tool_use", name: "propose_orders", input: { result: { kind: "orders", proposals: [tp] } } }], usage: { input_tokens: 900, output_tokens: 60 } })); }) as typeof fetch });
+  let sent: { tool_choice?: unknown; tools?: { name: string }[]; max_tokens?: number } = {}, to = "";
+  const ok = createAnthropicTranslator({ apiKey: "k", model: "m", fetch: (async (u: string, init: RequestInit) => { to = u; sent = JSON.parse(String(init.body)); return new Response(JSON.stringify({ content: [{ type: "tool_use", name: "propose_orders", input: { result: { kind: "orders", proposals: [tp] } } }], usage: { input_tokens: 900, output_tokens: 60 } })); }) as typeof fetch });
   assert.deepEqual(await ok.translate(input), { ok: true, result: { kind: "orders", proposals: [tp] }, usage: { inputTokens: 900, outputTokens: 60 } });
+  assert.equal(to, "https://api.anthropic.com/v1/messages");
   assert.deepEqual(sent.tool_choice, { type: "tool", name: PROPOSE_ORDERS.name }); assert.deepEqual(sent.tools?.map((t) => t.name), ["propose_orders"]); assert.equal(sent.max_tokens, 400);
   const text = createAnthropicTranslator({ apiKey: "k", model: "m", fetch: reply({ content: [{ type: "text", text: "sure" }] }) });
   assert.deepEqual(await text.translate(input), { ok: true, result: { kind: "none" }, usage: { inputTokens: 0, outputTokens: 0 }, malformed: true });
