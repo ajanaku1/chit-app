@@ -47,6 +47,26 @@ const call = (to, data) => rpc("eth_call", [{ to, data }, "latest"]).then((r) =>
 const words = (data) => data.slice(2).match(/.{64}/g).map((w) => BigInt("0x" + w));
 const hex = (n) => "0x" + n.toString(16);
 
+/**
+ * The public RPC refuses an eth_getLogs over 10M blocks ("query spans 30083349 blocks ... only
+ * 10000000 are allowed"), and the deploy is further back than that now; with two topics in one
+ * position the cap is 100k blocks. So: one topic per query, spans under the 10M cap, one call at a
+ * time like every other read here, then the two event kinds merged back into chain order.
+ */
+export const LOG_SPAN = 9_900_000;
+export const spans = (from, to, size = LOG_SPAN) => {
+  const out = [];
+  for (let a = from; a <= to; a += size) out.push([a, Math.min(a + size - 1, to)]);
+  return out;
+};
+const position = (log) => [parseInt(log.blockNumber, 16), parseInt(log.logIndex, 16)];
+export const inChainOrder = (a, b) => { const [ab, ai] = position(a), [bb, bi] = position(b); return ab - bb || ai - bi; };
+async function logsSince(address, topics, from, head) {
+  const logs = [];
+  for (const topic of topics) for (const [a, b] of spans(from, head)) logs.push(...(await rpc("eth_getLogs", [{ address, topics: [topic], fromBlock: hex(a), toBlock: hex(b) }])));
+  return logs.sort(inChainOrder);
+}
+
 /** Block timestamps never change: remembered for the life of this instance. */
 const blockTimes = new Map();
 
@@ -56,7 +76,7 @@ async function read() {
   const buys = await call(BUYBACK, SEL.buys), nextSpend = await call(BUYBACK, SEL.nextSpend), dueAt = await call(BUYBACK, SEL.dueAt), supply = await call(CHIT, SEL.totalSupply);
   const balanceHex = await rpc("eth_getBalance", [BUYBACK, "latest"]), latest = await rpc("eth_getBlockByNumber", ["latest", false]);
   const head = parseInt(latest.number, 16), now = Number(latest.timestamp);
-  const logs = await rpc("eth_getLogs", [{ address: BUYBACK, fromBlock: hex(FROM_BLOCK), toBlock: "latest", topics: [[TOPIC.funded, TOPIC.burned]] }]);
+  const logs = await logsSince(BUYBACK, [TOPIC.funded, TOPIC.burned], FROM_BLOCK, head);
   // The chain's cadence since the deploy places every event to within seconds; the latest few get the block's own stamp.
   const perBlock = head > FROM_BLOCK ? (now - DEPLOYED_AT) / (head - FROM_BLOCK) : 0;
   const placed = (blockHex) => Math.round(DEPLOYED_AT + (parseInt(blockHex, 16) - FROM_BLOCK) * perBlock);
