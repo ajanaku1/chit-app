@@ -16,7 +16,8 @@ import { btn, buildBuy, buildExit, buildShield, fmt, kb, orderLine, toUnits, typ
 import type { Order } from "./bot-orders.js";
 import type { PositionLedger } from "./bot-positions.js";
 import type { SentenceCard, SentenceStore, StoredProposal } from "./bot-sentence-store.js";
-import { matchToken, type Proposal, type Translator } from "./bot-sentence-translate.js";
+import { apply, directionAsk, gap, intervalAsk, sizeAsk, tokenAsk, type Ask, type Draft } from "./bot-sentence-questions.js";
+import { matchToken, type Proposal, type TranslationResult, type Translator } from "./bot-sentence-translate.js";
 import { esc, type Keyboard, type Telegram } from "./bot-telegram.js";
 
 export type SentenceDeskDeps = {
@@ -44,6 +45,7 @@ export const LINES = {
   cancelled: "nothing placed.",
   already: "already placed",
   placed: "placed. manage in Positions.",
+  questionGone: "that question expired, send it again.",
 } as const;
 
 /** HMAC-SHA256 over the lowercased, whitespace-collapsed sentence: a short sentence's plain hash is a dictionary away from its text. */
@@ -57,6 +59,8 @@ const HOURS = { hourly: 1, daily: 24, weekly: 168 } as const;
 const tail = (a: string): string => a.slice(-4);
 const NOBODY = "0x0000000000000000000000000000000000000000" as Address;
 const B = 10_000n;
+/** A question waits this long for its tap (data-model.md bot_sentence_pending). */
+const LEASE_MS = 10 * 60_000;
 /** A refusal at Confirm leaves the card Proposed: the way back is the card itself. */
 const RETRY: Retry = { again: "send the sentence again.", buttons: kb([btn("← Back", "home")]) };
 
@@ -172,8 +176,24 @@ export class SentenceDesk {
     if (got.malformed) console.warn(`sentence ${hash.slice(0, 12)}: malformed`);
     const r = got.result;
     if (r.kind === "none") return r.note === "mcap" ? void (await this.#say(chatId, LINES.mcap)) : this.#d.hint(chatId);
-    if (r.kind === "question") { await this.#say(chatId, LINES.unread); return; }
-    return this.#card(chatId, tgId, hash, r.proposals, r.cut === true, candidates);
+    if (r.kind === "question") return this.#question(chatId, tgId, hash, r, candidates);
+    return this.#card(chatId, tgId, hash, { proposals: r.proposals }, candidates, { cut: r.cut === true, asked: false });
+  }
+
+  /** The model's own question: the direction is asked from the move it heard; the card path finds and asks the rest. */
+  async #question(chatId: string, tgId: string, hash: string, r: Extract<TranslationResult, { kind: "question" }>, candidates: Candidate[]): Promise<void> {
+    if (r.draft.length === 0) { await this.#say(chatId, LINES.unread); return; }
+    if (r.missing !== "direction") return this.#card(chatId, tgId, hash, { proposals: r.draft }, candidates, { cut: false, asked: false });
+    const ask = directionAsk(r.draft);
+    if (!ask) { await this.#say(chatId, LINES.unread); return; }
+    return this.#ask(chatId, tgId, hash, { proposals: r.draft }, ask);
+  }
+
+  /** One question with buttons (FR-007), the draft kept for ten minutes against the tap. */
+  async #ask(chatId: string, tgId: string, hash: string, draft: Draft, ask: Ask): Promise<void> {
+    const partial = { missing: ask.missing, draft: draft.proposals, choices: ask.choices, labels: ask.labels, ...(draft.pinned ? { pinned: draft.pinned } : {}) };
+    await this.#d.store.setPending({ chatId, tgId, sentenceHash: hash, partial, leaseUntil: new Date(this.#now.getTime() + LEASE_MS).toISOString() });
+    await this.#say(chatId, ask.text, kb(...ask.labels.map((label, i) => [btn(label, `sq:${chatId}:${i}`)]), [btn("Cancel", `sq:${chatId}:x`)]));
   }
 
   /** A new sentence drops the chat's question and expires its open card, in the message too (FR-009). */
@@ -190,42 +210,72 @@ export class SentenceDesk {
     return Promise.all(tokens.map((address) => this.#candidate(address, account)));
   }
 
-  /** The one token every proposal names: a sell among the held, a buy among anything traded (research R3); else the line. */
-  #tokenFor(proposals: Proposal[], candidates: Candidate[]): Candidate | string {
+  /**
+   * The one token every proposal names: a sell among the held, a buy among anything traded (research R3). More than
+   * one match, or a buy or a nameless token that matches nothing, is the token question's options; else the line.
+   */
+  #tokenFor(draft: Draft, candidates: Candidate[]): Candidate | Candidate[] | string {
+    const held = candidates.filter((c) => c.balance > 0n);
+    if (draft.pinned) return candidates.find((c) => c.address === draft.pinned) ?? LINES.unread;
     const found = new Set<Candidate>();
-    for (const p of proposals) {
-      const pool = SELLS.includes(p.kind) ? candidates.filter((c) => c.balance > 0n) : candidates;
-      const hits = matchToken(p.tokenText, pool);
-      if (hits.length === 0 && SELLS.includes(p.kind)) return `you hold no ${esc(p.tokenText.replace(/^\$/, "").toUpperCase())} in this account.`;
-      if (hits.length !== 1) return LINES.unread;
-      found.add(pool.find((c) => c.address === hits[0])!);
+    for (const p of draft.proposals) {
+      const sell = SELLS.includes(p.kind), pool = sell ? held : candidates;
+      const named = matchToken(p.tokenText, pool), hits = pool.filter((c) => named.includes(c.address));
+      if (hits.length > 1) return hits;
+      if (hits.length === 0 && sell && p.tokenText.trim()) return `you hold no ${esc(p.tokenText.replace(/^\$/, "").toUpperCase())} in this account.`;
+      if (hits.length === 0) return held.length ? held : LINES.unread;
+      found.add(hits[0]!);
     }
     return found.size === 1 ? [...found][0]! : LINES.unread;
   }
 
-  async #card(chatId: string, tgId: string, hash: string, proposals: Proposal[], cut: boolean, candidates: Candidate[]): Promise<void> {
-    const c = this.#tokenFor(proposals, candidates);
+  /** The draft as a card, or the one question it still needs; after a question has been asked, the line instead (FR-008). */
+  async #card(chatId: string, tgId: string, hash: string, draft: Draft, candidates: Candidate[], o: { cut: boolean; asked: boolean }): Promise<void> {
+    const c = this.#tokenFor(draft, candidates);
     if (typeof c === "string") { await this.#say(chatId, c); return; }
+    if (Array.isArray(c)) return o.asked ? void (await this.#say(chatId, LINES.unread)) : this.#ask(chatId, tgId, hash, draft, tokenAsk(c));
     if (!c.hasPool) { await this.#say(chatId, "no ETH pool on the venue for this token, so nothing to order."); return; }
+    const g = gap(draft.proposals);
+    if (g) return o.asked ? void (await this.#say(chatId, LINES.unread)) : this.#ask(chatId, tgId, hash, { ...draft, pinned: c.address }, g.missing === "size" ? sizeAsk(g.sell, c.symbol) : intervalAsk());
     const stored: StoredProposal[] = [];
-    for (const p of proposals) {
+    for (const p of draft.proposals) {
       const s = toStored(p, c);
       if (typeof s === "string") { await this.#say(chatId, s); return; }
       stored.push(s);
     }
     const card = await this.#d.store.createCard({ chatId, tgId, sentenceHash: hash, token: c.address, perEthAtCard: c.perEth, proposals: stored, createdAt: this.#now.toISOString() });
     if (!card) { await this.#say(chatId, LINES.unread); return; }
-    const messageId = await this.#say(chatId, cardText(card, c, cut), kb([btn("Confirm", `sc:${card.id}:ok`), btn("Cancel", `sc:${card.id}:no`)]));
+    const messageId = await this.#say(chatId, cardText(card, c, o.cut), kb([btn("Confirm", `sc:${card.id}:ok`), btn("Cancel", `sc:${card.id}:no`)]));
     if (messageId !== undefined) await this.#d.store.setMessage(card.id, messageId);
   }
 
   /** `sc:<id>:ok` or `sc:<id>:no`, once per card (FR-006); what comes back is the tap's toast. */
-  async handleCallback(chatId: string, tgId: string, data: string): Promise<string | undefined> {
+  async handleCallback(chatId: string, tgId: string, data: string, messageId?: number): Promise<string | undefined> {
+    if (data.startsWith("sq:")) return this.#answer(chatId, tgId, data, messageId);
     const [, id = "", verb] = data.split(":");
     const card = await this.#d.store.getCard(id);
     if (!card || card.tgId !== tgId || card.chatId !== chatId) return LINES.expired;
     if (verb === "no") return this.#cancel(card);
     if (verb === "ok") return this.#confirm(card);
+    return undefined;
+  }
+
+  /** `sq:<chat>:<i>` fills the draft and goes on to the card, once (FR-008); `sq:<chat>:x` drops the question. */
+  async #answer(chatId: string, tgId: string, data: string, messageId: number | undefined): Promise<string | undefined> {
+    const [, chatKey, pick = ""] = data.split(":");
+    if (chatKey !== chatId) return LINES.questionGone;
+    const edit = (text: string) => (messageId === undefined ? undefined : this.#d.telegram.deliver({ kind: "edit", chatId, messageId, text, keyboard: kb() }));
+    if (pick === "x") { await this.#d.store.dropPending(chatId); await edit(LINES.cancelled); return undefined; }
+    const got = await this.#d.store.consumePending(chatId, this.#now);
+    if (!got || "expired" in got || got.question.tgId !== tgId) return LINES.questionGone;
+    const { partial, sentenceHash } = got.question;
+    const choice = partial.choices[Number(pick)];
+    if (!/^\d+$/.test(pick) || choice === undefined) return LINES.questionGone;
+    await edit(esc(partial.labels?.[Number(pick)] ?? choice));
+    const link = await this.#d.links.getLink(tgId);
+    if (!link) { await this.#d.connect(chatId, tgId); return undefined; }
+    const draft = apply({ proposals: partial.draft as Proposal[], ...(partial.pinned ? { pinned: partial.pinned } : {}) }, partial.missing, choice);
+    await this.#card(chatId, tgId, sentenceHash, draft, await this.#candidates(link.account), { cut: false, asked: true });
     return undefined;
   }
 
