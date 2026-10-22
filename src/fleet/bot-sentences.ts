@@ -219,9 +219,69 @@ export class SentenceDesk {
     if (messageId !== undefined) await this.#d.store.setMessage(card.id, messageId);
   }
 
+  /** `sc:<id>:ok` or `sc:<id>:no`, once per card (FR-006); what comes back is the tap's toast. */
+  async handleCallback(chatId: string, tgId: string, data: string): Promise<string | undefined> {
+    const [, id = "", verb] = data.split(":");
+    const card = await this.#d.store.getCard(id);
+    if (!card || card.tgId !== tgId || card.chatId !== chatId) return LINES.expired;
+    if (verb === "no") return this.#cancel(card);
+    if (verb === "ok") return this.#confirm(card);
+    return undefined;
+  }
+
+  /** The answer to a tap on a card that has already left Proposed. */
+  async #byState(id: string): Promise<string> {
+    const state = (await this.#d.store.getCard(id))?.state;
+    return state === "placed" ? LINES.already : state === "cancelled" ? LINES.cancelled : LINES.expired;
+  }
+
+  async #edit(card: SentenceCard, text: string): Promise<void> {
+    if (card.messageId !== undefined) await this.#d.telegram.deliver({ kind: "edit", chatId: card.chatId, messageId: card.messageId, text, keyboard: kb() });
+  }
+
+  async #cancel(card: SentenceCard): Promise<string | undefined> {
+    if (!(await this.#d.store.transition(card.id, "cancelled", this.#now))) return this.#byState(card.id);
+    await this.#edit(card, LINES.cancelled);
+    return undefined;
+  }
+
+  /**
+   * Every order is built through the buttons' preflight before the card moves, so a refusal places nothing and
+   * leaves the card to tap again; the move to placed is the one atomic step, and only its winner stores the orders.
+   */
+  async #confirm(card: SentenceCard): Promise<string | undefined> {
+    if (card.state !== "proposed") return this.#byState(card.id);
+    const link = await this.#d.links.getLink(card.tgId);
+    if (!link) { await this.#d.connect(card.chatId, card.tgId); return undefined; }
+    const c = await this.#candidate(card.token as Address, link.account);
+    const built = await this.#buildAll(card, link.account, c.decimals);
+    if (!Array.isArray(built)) { await this.#say(card.chatId, built.reason, built.buttons); return undefined; }
+    if (!(await this.#d.store.transition(card.id, "placed", this.#now))) return this.#byState(card.id);
+    for (const order of built) await this.#d.build.orders.put(order);
+    await this.#d.store.addEval({ sentenceHash: card.sentenceHash, context: { held: [{ symbol: c.symbol, tail: tail(card.token) }], perEth: { [tail(card.token)]: card.perEthAtCard.toString() } }, accepted: card.proposals, at: this.#now.toISOString() });
+    await this.#edit(card, cardText(card, c, false, LINES.placed));
+    return undefined;
+  }
+
   async #candidate(address: Address, account: Address): Promise<Candidate> {
     const [info, balance] = await Promise.all([this.#d.build.reads.tokenInfo(address), this.#d.build.reads.tokenBalance(address, account)]);
     return { symbol: info.symbol, address, decimals: info.decimals, balance, perEth: info.perEth, hasPool: info.hasPool };
   }
 
+  /** Each proposal through the shared preflight, levels as fixed on the card (FR-014); the first refusal stops it. */
+  async #buildAll(card: SentenceCard, account: Address, decimals: number): Promise<Order[] | Refusal> {
+    const who = { tgId: card.tgId, account, token: card.token as Address };
+    const orders: Order[] = [];
+    for (const p of card.proposals) {
+      const ethWei = BigInt(p.ethWei ?? "0");
+      let b: Built;
+      if (p.kind === "tp" || p.kind === "sl") b = await buildExit(this.#d.build, { ...who, kind: p.kind, move: (p.moveBps ?? 0) / 100, pct: p.sizePct ?? 0 }, RETRY);
+      else if (p.kind === "limit") b = await buildBuy(this.#d.build, { ...who, kind: "limit", ethWei, perEth: fmt(BigInt(p.levelPerEth), decimals, decimals) }, RETRY);
+      else if (p.kind === "dca") b = await buildBuy(this.#d.build, { ...who, kind: "dca", ethWei, hours: (p.everyMs ?? 0) / 3_600_000, times: p.count ?? 0 }, RETRY);
+      else b = await buildShield(this.#d.build, who);
+      if (!b.ok) return b;
+      orders.push(p.kind === "tp" || p.kind === "sl" ? { ...b.order, triggerPerEth: BigInt(p.levelPerEth) } : b.order);
+    }
+    return orders;
+  }
 }
