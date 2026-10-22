@@ -12,9 +12,11 @@
 import { createHmac } from "node:crypto";
 import type { Address } from "viem";
 import type { BotLinkStore } from "./bot-link.js";
-import { btn, buildBuy, buildExit, buildShield, fmt, kb, orderLine, toUnits, type Built, type OrderBuildDeps, type Refusal, type Retry } from "./bot-order-build.js";
-import type { Order } from "./bot-orders.js";
+import { CEILING, SHIELD_ON, btn, buildBuy, buildExit, buildShield, eth, fmt, kb, orderLine, toUnits, type Built, type OrderBuildDeps, type Refusal, type Retry } from "./bot-order-build.js";
+import { MAX_OPEN_ORDERS, type Order } from "./bot-orders.js";
 import type { PositionLedger } from "./bot-positions.js";
+import type { SessionChain } from "./bot-session-chain.js";
+import { sessionState } from "./session-keys.js";
 import type { SentenceCard, SentenceStore, StoredProposal } from "./bot-sentence-store.js";
 import { apply, directionAsk, gap, intervalAsk, sizeAsk, tokenAsk, type Ask, type Draft } from "./bot-sentence-questions.js";
 import { matchToken, type Proposal, type TranslationResult, type Translator } from "./bot-sentence-translate.js";
@@ -46,6 +48,10 @@ export const LINES = {
   already: "already placed",
   placed: "placed. manage in Positions.",
   questionGone: "that question expired, send it again.",
+  moved: "price moved, check again.",
+  waits: "will wait until you resume.",
+  clamped: "size clamped to 100%",
+  noCap: "your session allows no ETH a trade, so there is nothing to buy with. raise it on the Sessions page.",
 } as const;
 
 /** HMAC-SHA256 over the lowercased, whitespace-collapsed sentence: a short sentence's plain hash is a dictionary away from its text. */
@@ -61,6 +67,10 @@ const NOBODY = "0x0000000000000000000000000000000000000000" as Address;
 const B = 10_000n;
 /** A question waits this long for its tap (data-model.md bot_sentence_pending). */
 const LEASE_MS = 10 * 60_000;
+/** A Proposed card is good for this long (FR-005); the orders cron edits it to expired within five minutes after. */
+export const CARD_MS = 10 * 60_000;
+/** More than this many basis points of move between the card and Confirm re-renders it (FR-014). */
+const MOVED_BPS = 500n;
 /** A refusal at Confirm leaves the card Proposed: the way back is the card itself. */
 const RETRY: Retry = { again: "send the sentence again.", buttons: kb([btn("← Back", "home")]) };
 
@@ -84,7 +94,7 @@ const moveOf = (p: Proposal, c: Candidate): number | undefined => {
 /** A sell's share, clamped to 100 with the clamp said (FR-012). */
 const share = (p: Proposal): { sizePct: number; note?: string } | undefined => {
   if (!p.size || !("pct" in p.size) || p.size.pct <= 0) return undefined;
-  return p.size.pct > 100 ? { sizePct: 100, note: "more than all of it is all of it: 100%" } : { sizePct: Math.round(p.size.pct) };
+  return p.size.pct > 100 ? { sizePct: 100, note: LINES.clamped } : { sizePct: Math.round(p.size.pct) };
 };
 
 const exitOf = (p: Proposal, c: Candidate): StoredProposal | string => {
@@ -140,14 +150,41 @@ const levelWords = (card: SentenceCard, p: StoredProposal, decimals: number): st
   return ` · <code>${multiple.toFixed(2)}×</code> · <code>${pct > 0 ? "+" : ""}${pct}%</code> · <code>${ethPrice(priceWei(level, decimals))} ETH</code>`;
 };
 
-export const cardText = (card: SentenceCard, c: Candidate, cut: boolean, tailLine: string = LINES.footer): string => [
+export const cardText = (card: SentenceCard, c: Candidate, cut: boolean, tailLine: string = LINES.footer, existing?: Order): string => [
   `<b>${esc(c.symbol)}</b> · you hold <code>${fmt(c.balance, c.decimals, 2)}</code> · now <code>${ethPrice(priceWei(card.perEthAtCard, c.decimals))} ETH</code>`,
   "",
+  ...(existing ? [`<i>open now: ${orderLine(existing, c.symbol, c.decimals)}</i>`, ""] : []),
   ...card.proposals.flatMap((p, i) => [`${i + 1}. ${orderLine(preview(card, p), c.symbol, c.decimals)}${levelWords(card, p, c.decimals)}`, ...(p.note ? [`   <i>${esc(p.note)}</i>`] : [])]),
   ...(cut ? ["", LINES.three] : []),
   "",
   tailLine,
 ].join("\n");
+
+/** Confirm and Cancel, or Replace, Add both and Cancel when the card names an open order of the same kind (FR-013). */
+const cardKeys = (card: SentenceCard): ReturnType<typeof kb> => card.existingOrderId
+  ? kb([btn("Replace", `sc:${card.id}:rep`), btn("Add both", `sc:${card.id}:add`), btn("Cancel", `sc:${card.id}:no`)])
+  : kb([btn("Confirm", `sc:${card.id}:ok`), btn("Cancel", `sc:${card.id}:no`)]);
+
+/** The same relative instruction at a new price: a move in basis points gives a new level; an ETH level stays (FR-014). */
+const reprice = (p: StoredProposal, perEth: bigint): StoredProposal => {
+  if (p.moveBps === undefined) return p;
+  const b = BigInt(p.moveBps);
+  return { ...p, levelPerEth: (p.kind === "tp" ? (perEth * B) / (B + b) : (perEth * B) / (B - b)).toString() };
+};
+
+/** Paused, the orders are taken and wait (FR-016): the session's answer for this trade is not asked; every other check is. */
+const waiting = (s: SessionChain): SessionChain => ({ ...s, canExecute: async () => ({ ok: true, why: "" }), canSell: async () => ({ ok: true, why: "" }) });
+
+/** The orders cron's sweep (research R5): every Proposed card past its ten minutes becomes expired, in the message too. */
+export const sweepCards = async (store: SentenceStore, telegram: Telegram, now: Date): Promise<number> => {
+  const stale = await store.expireStale(new Date(now.getTime() - CARD_MS), now);
+  for (const c of stale) {
+    if (c.messageId !== undefined) await telegram.deliver({ kind: "edit", chatId: c.chatId, messageId: c.messageId, text: LINES.expired, keyboard: kb() }).catch(() => undefined);
+  }
+  return stale.length;
+};
+
+type Gate = { paused: boolean; capWei: bigint };
 
 export class SentenceDesk {
   readonly #d: SentenceDeskDeps;
@@ -162,7 +199,8 @@ export class SentenceDesk {
   /** A sentence from the DM: translated once (FR-023), answered with one card, a line, or the hint. */
   async handleText(chatId: string, tgId: string, text: string): Promise<void> {
     const link = await this.#d.links.getLink(tgId);
-    if (!link) return this.#d.connect(chatId, tgId);
+    const gate = link ? await this.#gate(link.account) : undefined;
+    if (!link || !gate) return this.#d.connect(chatId, tgId);
     await this.#expireOpen(chatId);
     const candidates = await this.#candidates(link.account);
     const held = candidates.filter((c) => c.balance > 0n);
@@ -176,14 +214,21 @@ export class SentenceDesk {
     if (got.malformed) console.warn(`sentence ${hash.slice(0, 12)}: malformed`);
     const r = got.result;
     if (r.kind === "none") return r.note === "mcap" ? void (await this.#say(chatId, LINES.mcap)) : this.#d.hint(chatId);
-    if (r.kind === "question") return this.#question(chatId, tgId, hash, r, candidates);
-    return this.#card(chatId, tgId, hash, { proposals: r.proposals }, candidates, { cut: r.cut === true, asked: false });
+    if (r.kind === "question") return this.#question(chatId, tgId, hash, r, candidates, gate);
+    return this.#card(chatId, tgId, hash, { proposals: r.proposals }, candidates, { cut: r.cut === true, asked: false, gate });
+  }
+
+  /** The session as the card needs it: paused or not and the per-trade cap; undefined is the Connect prompt (FR-016). */
+  async #gate(account: Address): Promise<Gate | undefined> {
+    const view = await this.#d.build.session.sessionOf(account);
+    const state = sessionState(view, Math.floor(this.#now.getTime() / 1000));
+    return state === "active" || state === "paused" ? { paused: state === "paused", capWei: BigInt(view.maxValuePerCall) } : undefined;
   }
 
   /** The model's own question: the direction is asked from the move it heard; the card path finds and asks the rest. */
-  async #question(chatId: string, tgId: string, hash: string, r: Extract<TranslationResult, { kind: "question" }>, candidates: Candidate[]): Promise<void> {
+  async #question(chatId: string, tgId: string, hash: string, r: Extract<TranslationResult, { kind: "question" }>, candidates: Candidate[], gate: Gate): Promise<void> {
     if (r.draft.length === 0) { await this.#say(chatId, LINES.unread); return; }
-    if (r.missing !== "direction") return this.#card(chatId, tgId, hash, { proposals: r.draft }, candidates, { cut: false, asked: false });
+    if (r.missing !== "direction") return this.#card(chatId, tgId, hash, { proposals: r.draft }, candidates, { cut: false, asked: false, gate });
     const ask = directionAsk(r.draft);
     if (!ask) { await this.#say(chatId, LINES.unread); return; }
     return this.#ask(chatId, tgId, hash, { proposals: r.draft }, ask);
@@ -230,7 +275,7 @@ export class SentenceDesk {
   }
 
   /** The draft as a card, or the one question it still needs; after a question has been asked, the line instead (FR-008). */
-  async #card(chatId: string, tgId: string, hash: string, draft: Draft, candidates: Candidate[], o: { cut: boolean; asked: boolean }): Promise<void> {
+  async #card(chatId: string, tgId: string, hash: string, draft: Draft, candidates: Candidate[], o: { cut: boolean; asked: boolean; gate: Gate }): Promise<void> {
     const c = this.#tokenFor(draft, candidates);
     if (typeof c === "string") { await this.#say(chatId, c); return; }
     if (Array.isArray(c)) return o.asked ? void (await this.#say(chatId, LINES.unread)) : this.#ask(chatId, tgId, hash, draft, tokenAsk(c));
@@ -243,10 +288,34 @@ export class SentenceDesk {
       if (typeof s === "string") { await this.#say(chatId, s); return; }
       stored.push(s);
     }
-    const card = await this.#d.store.createCard({ chatId, tgId, sentenceHash: hash, token: c.address, perEthAtCard: c.perEth, proposals: stored, createdAt: this.#now.toISOString() });
+    const checked = await this.#check(tgId, c, stored, o.gate);
+    if (typeof checked === "string") { await this.#say(chatId, checked); return; }
+    const card = await this.#d.store.createCard({ chatId, tgId, sentenceHash: hash, token: c.address, perEthAtCard: c.perEth, proposals: checked.proposals, createdAt: this.#now.toISOString(), ...(checked.existing ? { existingOrderId: checked.existing.id } : {}) });
     if (!card) { await this.#say(chatId, LINES.unread); return; }
-    const messageId = await this.#say(chatId, cardText(card, c, o.cut), kb([btn("Confirm", `sc:${card.id}:ok`), btn("Cancel", `sc:${card.id}:no`)]));
+    const messageId = await this.#say(chatId, cardText(card, c, o.cut, this.#tail(LINES.footer, o.gate), checked.existing), cardKeys(card));
     if (messageId !== undefined) await this.#d.store.setMessage(card.id, messageId);
+  }
+
+  #tail(line: string, gate: Gate): string { return gate.paused ? `${line}\n${LINES.waits}` : line; }
+
+  /**
+   * What the account's open orders and session say before the card is shown: a second shield is already on, the
+   * ceiling counts the card's orders too, a buy over the per-trade cap is cut to it and says so, and an open order of
+   * the same kind on the token is named, for Replace or Add both (FR-012, FR-012d, FR-013).
+   */
+  async #check(tgId: string, c: Candidate, stored: StoredProposal[], gate: Gate): Promise<{ proposals: StoredProposal[]; existing?: Order } | string> {
+    const open = await this.#d.build.orders.openFor(tgId, this.#d.build.session.chainId);
+    const here = open.filter((o) => o.token.toLowerCase() === c.address);
+    if (stored.some((p) => p.kind === "shield") && here.some((o) => o.kind === "shield")) return SHIELD_ON;
+    if (open.length + stored.length > MAX_OPEN_ORDERS) return CEILING;
+    const buys = stored.some((p) => p.kind === "limit" || p.kind === "dca");
+    if (buys && gate.capWei === 0n) return LINES.noCap;
+    const proposals = stored.map((p): StoredProposal => {
+      if (p.ethWei === undefined || BigInt(p.ethWei) <= gate.capWei) return p;
+      return { ...p, ethWei: gate.capWei.toString(), note: `your session allows ${eth(gate.capWei)} ETH a trade, so ${eth(gate.capWei)} ETH` };
+    });
+    const existing = here.find((o) => o.kind !== "shield" && proposals.some((p) => p.kind === o.kind));
+    return existing ? { proposals, existing } : { proposals };
   }
 
   /** `sc:<id>:ok` or `sc:<id>:no`, once per card (FR-006); what comes back is the tap's toast. */
@@ -255,8 +324,13 @@ export class SentenceDesk {
     const [, id = "", verb] = data.split(":");
     const card = await this.#d.store.getCard(id);
     if (!card || card.tgId !== tgId || card.chatId !== chatId) return LINES.expired;
+    // Past its ten minutes, any tap expires it here, before the sweep gets to it (FR-005).
+    if (card.state === "proposed" && this.#now.getTime() - Date.parse(card.createdAt) >= CARD_MS) {
+      if (await this.#d.store.transition(card.id, "expired", this.#now)) await this.#edit(card, LINES.expired);
+      return LINES.expired;
+    }
     if (verb === "no") return this.#cancel(card);
-    if (verb === "ok") return this.#confirm(card);
+    if (verb === "ok" || verb === "add" || verb === "rep") return this.#confirm(card, verb === "rep");
     return undefined;
   }
 
@@ -273,9 +347,10 @@ export class SentenceDesk {
     if (!/^\d+$/.test(pick) || choice === undefined) return LINES.questionGone;
     await edit(esc(partial.labels?.[Number(pick)] ?? choice));
     const link = await this.#d.links.getLink(tgId);
-    if (!link) { await this.#d.connect(chatId, tgId); return undefined; }
+    const gate = link ? await this.#gate(link.account) : undefined;
+    if (!link || !gate) { await this.#d.connect(chatId, tgId); return undefined; }
     const draft = apply({ proposals: partial.draft as Proposal[], ...(partial.pinned ? { pinned: partial.pinned } : {}) }, partial.missing, choice);
-    await this.#card(chatId, tgId, sentenceHash, draft, await this.#candidates(link.account), { cut: false, asked: true });
+    await this.#card(chatId, tgId, sentenceHash, draft, await this.#candidates(link.account), { cut: false, asked: true, gate });
     return undefined;
   }
 
@@ -285,8 +360,8 @@ export class SentenceDesk {
     return state === "placed" ? LINES.already : state === "cancelled" ? LINES.cancelled : LINES.expired;
   }
 
-  async #edit(card: SentenceCard, text: string): Promise<void> {
-    if (card.messageId !== undefined) await this.#d.telegram.deliver({ kind: "edit", chatId: card.chatId, messageId: card.messageId, text, keyboard: kb() });
+  async #edit(card: SentenceCard, text: string, keyboard: ReturnType<typeof kb> = kb()): Promise<void> {
+    if (card.messageId !== undefined) await this.#d.telegram.deliver({ kind: "edit", chatId: card.chatId, messageId: card.messageId, text, keyboard });
   }
 
   async #cancel(card: SentenceCard): Promise<string | undefined> {
@@ -298,19 +373,34 @@ export class SentenceDesk {
   /**
    * Every order is built through the buttons' preflight before the card moves, so a refusal places nothing and
    * leaves the card to tap again; the move to placed is the one atomic step, and only its winner stores the orders.
+   * A price that moved more than 5% since the card re-renders it instead (FR-014); Replace closes the named order.
    */
-  async #confirm(card: SentenceCard): Promise<string | undefined> {
+  async #confirm(card: SentenceCard, replace: boolean): Promise<string | undefined> {
     if (card.state !== "proposed") return this.#byState(card.id);
     const link = await this.#d.links.getLink(card.tgId);
-    if (!link) { await this.#d.connect(card.chatId, card.tgId); return undefined; }
+    const gate = link ? await this.#gate(link.account) : undefined;
+    if (!link || !gate) { await this.#d.connect(card.chatId, card.tgId); return undefined; }
     const c = await this.#candidate(card.token as Address, link.account);
-    const built = await this.#buildAll(card, link.account, c.decimals);
+    const existing = card.existingOrderId ? (await this.#d.build.orders.openFor(card.tgId, this.#d.build.session.chainId)).find((o) => o.id === card.existingOrderId) : undefined;
+    const drift = c.perEth > card.perEthAtCard ? c.perEth - card.perEthAtCard : card.perEthAtCard - c.perEth;
+    if (drift * B > MOVED_BPS * card.perEthAtCard) return this.#moved(card, c, gate, existing);
+    const built = await this.#buildAll(card, link.account, c.decimals, gate);
     if (!Array.isArray(built)) { await this.#say(card.chatId, built.reason, built.buttons); return undefined; }
     if (!(await this.#d.store.transition(card.id, "placed", this.#now))) return this.#byState(card.id);
+    if (replace && card.existingOrderId) await this.#d.build.orders.cancel(card.existingOrderId);
     for (const order of built) await this.#d.build.orders.put(order);
     await this.#d.store.addEval({ sentenceHash: card.sentenceHash, context: { held: [{ symbol: c.symbol, tail: tail(card.token) }], perEth: { [tail(card.token)]: card.perEthAtCard.toString() } }, accepted: card.proposals, at: this.#now.toISOString() });
-    await this.#edit(card, cardText(card, c, false, LINES.placed));
+    await this.#edit(card, cardText(card, c, false, this.#tail(LINES.placed, gate)));
     return undefined;
+  }
+
+  /** The card again at the new price, still Proposed, nothing placed. */
+  async #moved(card: SentenceCard, c: Candidate, gate: Gate, existing: Order | undefined): Promise<string> {
+    const proposals = card.proposals.map((p) => reprice(p, c.perEth));
+    if (!(await this.#d.store.rerender(card.id, c.perEth, proposals))) return this.#byState(card.id);
+    const next = { ...card, perEthAtCard: c.perEth, proposals };
+    await this.#edit(next, cardText(next, c, false, this.#tail(`${LINES.moved}\n${LINES.footer}`, gate), existing), cardKeys(next));
+    return LINES.moved;
   }
 
   async #candidate(address: Address, account: Address): Promise<Candidate> {
@@ -319,16 +409,17 @@ export class SentenceDesk {
   }
 
   /** Each proposal through the shared preflight, levels as fixed on the card (FR-014); the first refusal stops it. */
-  async #buildAll(card: SentenceCard, account: Address, decimals: number): Promise<Order[] | Refusal> {
+  async #buildAll(card: SentenceCard, account: Address, decimals: number, gate: Gate): Promise<Order[] | Refusal> {
     const who = { tgId: card.tgId, account, token: card.token as Address };
+    const build = gate.paused ? { ...this.#d.build, session: waiting(this.#d.build.session) } : this.#d.build;
     const orders: Order[] = [];
     for (const p of card.proposals) {
       const ethWei = BigInt(p.ethWei ?? "0");
       let b: Built;
-      if (p.kind === "tp" || p.kind === "sl") b = await buildExit(this.#d.build, { ...who, kind: p.kind, move: (p.moveBps ?? 0) / 100, pct: p.sizePct ?? 0 }, RETRY);
-      else if (p.kind === "limit") b = await buildBuy(this.#d.build, { ...who, kind: "limit", ethWei, perEth: fmt(BigInt(p.levelPerEth), decimals, decimals) }, RETRY);
-      else if (p.kind === "dca") b = await buildBuy(this.#d.build, { ...who, kind: "dca", ethWei, hours: (p.everyMs ?? 0) / 3_600_000, times: p.count ?? 0 }, RETRY);
-      else b = await buildShield(this.#d.build, who);
+      if (p.kind === "tp" || p.kind === "sl") b = await buildExit(build, { ...who, kind: p.kind, move: (p.moveBps ?? 0) / 100, pct: p.sizePct ?? 0 }, RETRY);
+      else if (p.kind === "limit") b = await buildBuy(build, { ...who, kind: "limit", ethWei, perEth: fmt(BigInt(p.levelPerEth), decimals, decimals) }, RETRY);
+      else if (p.kind === "dca") b = await buildBuy(build, { ...who, kind: "dca", ethWei, hours: (p.everyMs ?? 0) / 3_600_000, times: p.count ?? 0 }, RETRY);
+      else b = await buildShield(build, who);
       if (!b.ok) return b;
       orders.push(p.kind === "tp" || p.kind === "sl" ? { ...b.order, triggerPerEth: BigInt(p.levelPerEth) } : b.order);
     }

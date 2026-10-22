@@ -33,6 +33,8 @@ export interface SentenceStore {
   rerender(id: string, perEthAtCard: bigint, proposals: StoredProposal[]): Promise<boolean>;
   /** Every Proposed card created before `before` becomes `expired`; how many. */
   expireOlderThan(before: Date, at: Date): Promise<number>;
+  /** The same sweep, answering with the cards it expired, so the caller can edit each message (research R5). */
+  expireStale(before: Date, at: Date): Promise<SentenceCard[]>;
   /** The chat's Proposed card, if any, becomes `expired` (a new sentence arrived); how many. */
   expireChat(chatId: string, at: Date): Promise<number>;
   setPending(q: PendingQuestion): Promise<void>;
@@ -85,6 +87,11 @@ export class MemorySentenceStore implements SentenceStore {
     return n;
   }
   async expireOlderThan(before: Date, at: Date) { return this.#expire((c) => Date.parse(c.createdAt) < before.getTime(), at); }
+  async expireStale(before: Date, at: Date) {
+    const stale = [...this.cards.values()].filter((c) => c.state === "proposed" && Date.parse(c.createdAt) < before.getTime());
+    for (const c of stale) await this.transition(c.id, "expired", at);
+    return stale.map((c) => ({ ...c }));
+  }
   async expireChat(chatId: string, at: Date) { return this.#expire((c) => c.chatId === chatId, at); }
   async setPending(q: PendingQuestion) { this.pending.set(q.chatId, q); }
   async consumePending(chatId: string, now: Date) {
@@ -160,6 +167,9 @@ export class NeonSentenceStore implements SentenceStore {
   }
   async expireOlderThan(before: Date, at: Date) {
     return (await this.#q(`UPDATE bot_sentence_cards SET state = 'expired', resolved_at = $2 WHERE state = 'proposed' AND created_at < $1 RETURNING id`, [before.toISOString(), at.toISOString()])).length;
+  }
+  async expireStale(before: Date, at: Date) {
+    return (await this.#q(`UPDATE bot_sentence_cards SET state = 'expired', resolved_at = $2 WHERE state = 'proposed' AND created_at < $1 RETURNING *`, [before.toISOString(), at.toISOString()])).map(rowCard);
   }
   async expireChat(chatId: string, at: Date) {
     return (await this.#q(`UPDATE bot_sentence_cards SET state = 'expired', resolved_at = $2 WHERE state = 'proposed' AND chat_id = $1 RETURNING id`, [chatId, at.toISOString()])).length;

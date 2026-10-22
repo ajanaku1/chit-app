@@ -65,7 +65,9 @@ export const orderLine = (o: Order, symbol: string, decimals: number): string =>
 
 const no = (reason: string, buttons: Keyboard): Refusal => ({ ok: false, reason, buttons });
 const backTo = (token: Address) => btn("← Back", `token:${token}`);
-const ceiling = (token: Address): Refusal => no(`that is ${MAX_OPEN_ORDERS} open orders, the most one account keeps in the beta; cancel one from 📋 Orders to set another.`, kb([btn("📋 Orders", "orders"), backTo(token)]));
+/** The open-order ceiling in words, shared with the sentence desk's card-time check (FR-012d). */
+export const CEILING = `that is ${MAX_OPEN_ORDERS} open orders, the most one account keeps in the beta; cancel one from 📋 Orders to set another.`;
+const ceiling = (token: Address): Refusal => no(CEILING, kb([btn("📋 Orders", "orders"), backTo(token)]));
 const noPool = (what: string): Refusal => no(`no ETH pool on the venue for this token, so nothing to ${what}.`, kb([btn("← Back", "home")]));
 
 /** A limit buy or a DCA: the amount was parsed by the prompt; the level is read in the token's own decimals. */
@@ -121,12 +123,14 @@ export const buildExit = async (d: OrderBuildDeps, ask: ExitAsk, retry: Retry): 
   return { ok: true, order, line: orderLine(order, info.symbol, info.decimals) };
 };
 
+export const SHIELD_ON = "🛡 rug shield is already on for this token. turn it off from 📋 Orders.";
+
 /** A rug shield on a held token: all of the position, no level, one per token. */
 export const buildShield = async (d: OrderBuildDeps, ask: Who): Promise<Built> => {
   const { tgId, account, token } = ask;
   const back = backTo(token);
   const open = await d.orders.openFor(tgId, d.session.chainId);
-  if (open.some((o) => o.kind === "shield" && o.token.toLowerCase() === token.toLowerCase())) return no("🛡 rug shield is already on for this token. turn it off from 📋 Orders.", kb([btn("📋 Orders", "orders"), back]));
+  if (open.some((o) => o.kind === "shield" && o.token.toLowerCase() === token.toLowerCase())) return no(SHIELD_ON, kb([btn("📋 Orders", "orders"), back]));
   if (open.length >= MAX_OPEN_ORDERS) return ceiling(token);
   const sessions = `${d.siteUrl}/app/sessions`;
   const [info, held] = await Promise.all([d.reads.tokenInfo(token), d.reads.tokenBalance(token, account)]);
