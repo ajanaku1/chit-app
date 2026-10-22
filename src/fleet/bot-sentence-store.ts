@@ -18,7 +18,7 @@ export type SentenceCard = {
   perEthAtCard: bigint; proposals: StoredProposal[]; existingOrderId?: string; createdAt: string; resolvedAt?: string;
 };
 export type NewCard = Omit<SentenceCard, "id" | "state" | "messageId" | "resolvedAt">;
-export type PendingQuestion = { chatId: string; tgId: string; sentenceHash: string; partial: { missing: "token" | "size" | "direction"; draft: unknown[]; choices: string[] }; leaseUntil: string };
+export type PendingQuestion = { chatId: string; tgId: string; sentenceHash: string; partial: { missing: "token" | "size" | "direction" | "interval"; draft: unknown[]; choices: string[]; labels?: string[]; pinned?: string }; leaseUntil: string };
 export type EvalRecord = { sentenceHash: string; context: { held: { symbol: string; tail: string }[]; perEth: Record<string, string> }; accepted: StoredProposal[]; at: string };
 
 export interface SentenceStore {

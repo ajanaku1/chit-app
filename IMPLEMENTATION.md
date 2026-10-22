@@ -3633,3 +3633,17 @@ admin at all, and a moved cold key would have passed in silence. It reads both
 now, the top-level one winning. The tests pin the matrix entries, the sites,
 the bearers and the admin's second home; the dry runs against both chains
 report nothing, as they should today.
+
+## 2026-10-22, agents US2: a share left unsaid after the direction question
+
+The spec's demo path ("pepe at 50%", tap take profit, get the card) and FR-008
+(one question per sentence) leave no room to ask for the share once the
+direction is answered, and FR-007 says the bot never guesses the size. The
+conservative reading kept here: the card shows the take profit or stop loss
+at 100% of the position, with the line "no share was given, so all of it.
+Cancel and say a share to sell less." under it. Nothing is placed without
+Confirm, and the share is on the card in plain words. This applies only after
+the direction question. A sentence that names a direction but no share gets
+the size question (25%, 50%, 100%). If the founder would rather the demo
+sentence ask for the share and skip the direction default, the change is in
+`apply` in `src/fleet/bot-sentence-questions.ts`.
