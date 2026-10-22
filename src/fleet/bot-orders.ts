@@ -19,10 +19,11 @@
  * session was paused, no quote) is retried at the next slot, not every five
  * minutes, so a pause does not burn the count.
  *
- * A refusal leaves the order open with the reason on it, because a paused
- * session is the owner's choice and not a reason to lose their order; three
- * refusals in a row fail it, so a dead session does not keep an order alive
- * for a month. The owner hears about every attempt in one line.
+ * A paused session is the owner's choice and not a reason to lose their
+ * order: it waits, told once, and never counts as a refusal, however long the
+ * pause. Any other refusal leaves the order open with the reason on it; three
+ * in a row fail it, so a dead session does not keep an order alive for a
+ * month. The owner hears about every attempt in one line.
  *
  * Money is sent at most once per slot. Before the send the run claims the
  * order in one statement (only an open, unclaimed order takes the claim, so
@@ -78,6 +79,7 @@ import type { SessionChain } from "./bot-session-chain.js";
 import { esc, type Telegram } from "./bot-telegram.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor, venuePoolKey } from "./v4-swap.js";
 import { executeGasWei, sellGasWei } from "./bot-gas.js";
+import { sessionState } from "./session-keys.js";
 
 /** limit and dca buy; tp (take profit) and sl (stop loss) sell a share of the position. */
 /** shield (rug shield) sells all of a position when the risk watch raises an alarm on its token; it has no price level. */
@@ -138,6 +140,8 @@ export const MAX_REFUSALS = 3;
 export const DEFAULT_MAX_PER_RUN = 20;
 /** Open orders one account keeps at once; the bot refuses the next one until one is cancelled or done. */
 export const MAX_OPEN_ORDERS = 10;
+/** What an order says while its session is paused; said once, however many checks the pause lasts. */
+export const PAUSED_WAIT = "your session is paused; the order waits until you resume it on the Sessions page";
 /** A claim older than this belongs to a run the platform killed (api/bot/orders.js lives 300 s at most). */
 export const FIRING_LEASE_MS = 6 * 60_000;
 /** The same daily budget per owner a tapped Buy has (bot-session.ts), counted the same way: the gas ceiling of one execute at the price ceiling (bot-gas.ts). */
@@ -322,7 +326,7 @@ export class OrderRunner {
     if (budget.gasWei >= (this.#d.dailyGasWei ?? DAILY_DEFAULTS.gasWei)) return this.#wait(o, now, "the bot has fronted its daily gas for this account; the order waits for tomorrow");
     // The contract's own answer first, so a refused buy burns no gas and says why in the contract's words.
     const can = await this.#d.session.canExecute(o.account, this.#d.reads.router, UNIVERSAL_ROUTER_EXECUTE_SELECTOR, o.ethWei);
-    if (!can.ok) return this.#refuse(o, now, `your session says no: ${can.why}`);
+    if (!can.ok) return this.#refuseOrWait(o, now, `your session says no: ${can.why}`);
     const deadline = BigInt(Math.floor(now.getTime() / 1000) + 3600);
     const data = encodeV4EthBuy({ token: o.token, amountIn: o.ethWei, minOut, deadline, ...(info.poolKey ? { poolKey: info.poolKey } : {}) });
     // The claim is the last word before money moves: cancelled meanwhile, held by another run, or a DCA slot another run
@@ -421,7 +425,7 @@ export class OrderRunner {
     const poolKey = info.poolKey ?? venuePoolKey(o.token);
     // The contract's own answer first: a paused, expired or revoked session, the flag gone, all refused here, before any gas, in its words.
     const can = await this.#d.session.canSell(o.account, this.#d.reads.router, poolKey, amount, minOut, deadline);
-    if (!can.ok) return this.#refuse(o, now, `your session says no: ${can.why}`);
+    if (!can.ok) return this.#refuseOrWait(o, now, `your session says no: ${can.why}`);
     const sale = { router: this.#d.reads.router, token: o.token, amountIn: amount, minOut, deadline, poolKey };
     // The sale as an eth_call first, so one that would revert costs no gas; a simulation the RPC could not run is no verdict.
     const sim = await Promise.resolve().then(() => this.#d.session.simulateSell?.(o.account, sale)).catch(() => undefined);
@@ -457,6 +461,15 @@ export class OrderRunner {
     if (!(await this.#d.orders.settle({ ...o, status: "failed", lastError: why }))) return "refused";
     await this.#tell(o.tgId, `${label(o)} on <code>${o.token}</code>: ${why}. the order is off.`);
     return "refused";
+  }
+
+  /** The session's no, read again: paused is a wait that never fails the order (FR-016); anything else is a refusal. */
+  async #refuseOrWait(o: Order, now: Date, why: string): Promise<"refused" | "waited"> {
+    let paused = false;
+    try { paused = sessionState(await this.#d.session.sessionOf(o.account), Math.floor(now.getTime() / 1000)) === "paused"; }
+    catch { /* an unread session is no pause: the refusal stands */ }
+    if (paused) return this.#wait(o, now, PAUSED_WAIT);
+    return this.#refuse(o, now, why);
   }
 
   async #refuse(o: Order, now: Date, why: string): Promise<"refused"> {
