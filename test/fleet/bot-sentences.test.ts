@@ -16,9 +16,9 @@ import { MAX_OPEN_ORDERS, MemoryOrderStore, newOrderId, type Order } from "../..
 import { MemoryPositionLedger } from "../../src/fleet/bot-positions.js";
 import { sellPreflight, type SessionChain } from "../../src/fleet/bot-session-chain.js";
 import { MemorySentenceStore } from "../../src/fleet/bot-sentence-store.js";
-import { FakeTranslator, type Proposal, type TranslationResult } from "../../src/fleet/bot-sentence-translate.js";
+import { FakeTranslator, hashSentence, type Proposal, type Translation, type TranslationResult, type Translator } from "../../src/fleet/bot-sentence-translate.js";
 import { ALL_OF_IT } from "../../src/fleet/bot-sentence-questions.js";
-import { CARD_MS, LINES, SentenceDesk, sweepCards } from "../../src/fleet/bot-sentences.js";
+import { CARD_MS, LINES, SentenceDesk, sweepCards, type SentenceLimits } from "../../src/fleet/bot-sentences.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
@@ -68,7 +68,7 @@ const MAP: Record<string, TranslationResult> = {
   [S.noEvery]: { kind: "orders", proposals: [{ kind: "dca", tokenText: "pepe", size: { eth: "0.005" }, count: 4 }] },
 };
 
-const setup = async (o: { twoPepes?: boolean } = {}) => {
+const setup = async (o: { twoPepes?: boolean; limits?: Partial<SentenceLimits>; translator?: Translator } = {}) => {
   let now = clock;
   const price = { pepe: PER_ETH };
   const st = { exists: true, paused: false, revoked: false, expiry: Math.floor(clock.getTime() / 1000) + 86_400, maxValuePerCall: parseEther("0.05").toString(), totalValueCap: parseEther("0.5").toString(), spentValue: "0", calls: 0 };
@@ -89,14 +89,16 @@ const setup = async (o: { twoPepes?: boolean } = {}) => {
   const orders = new MemoryOrderStore();
   const build: OrderBuildDeps = { reads, session, orders, siteUrl: "https://chit.tools", sellSlippageBps: 300, now: () => now };
   const links = new MemoryBotLinkStore();
+  await links.putLink({ tgId: "8", account: ACCOUNT, owner: ACCOUNT, chainId: 4663, nonce: "n", signature: "0x00", linkedAt: clock.toISOString() });
   await links.putLink({ tgId: "7", account: ACCOUNT, owner: ACCOUNT, chainId: 4663, nonce: "n", signature: "0x00", linkedAt: clock.toISOString() });
   const positions = new MemoryPositionLedger();
   for (const [i, token] of [PEPE, WIF, DRY, ...(o.twoPepes ? [PEPE2] : [])].entries()) await positions.note({ hash: `0x${String(i + 1).padStart(64, "0")}`, account: ACCOUNT, token, side: "buy", ethWei: parseEther("0.01"), asked: 0n, units: null, at: clock.toISOString() });
   const telegram = new RecordingTelegram();
-  const translator = new FakeTranslator(MAP);
+  // The FakeTranslator unless a test brings its own; only the fake's `calls` are read.
+  const translator = (o.translator ?? new FakeTranslator(MAP)) as FakeTranslator;
   const store = new MemorySentenceStore();
   const hints: string[] = [];
-  const desk = new SentenceDesk({ translator, store, telegram, links, positions, build, secret: "s", hint: async (c) => { hints.push(c); }, connect: async (c) => { connects.push(c); } });
+  const desk: SentenceDesk = new SentenceDesk({ translator, store, telegram, links, positions, build, secret: "s", hint: async (c) => { hints.push(c); }, connect: async (c) => { connects.push(c); }, ...(o.limits ? { limits: o.limits } : {}) });
   return { desk, telegram, orders, translator, store, build, hints, links, price, st, connects, later: (ms: number) => { now = new Date(now.getTime() + ms); } };
 };
 
@@ -367,4 +369,77 @@ test("US3 scenario 10 and the ceiling: a buy over the per-trade cap is cut to it
   await desk.handleText("7", "7", S.both);
   assert.equal(lastSent(telegram).text, CEILING, "nine open and two on the card is past ten");
   noPersona(telegram);
+});
+
+/** A translator whose every answer costs the same: a million input tokens and two million output, $11 at $1 and $5. */
+class PricedTranslator implements Translator {
+  calls = 0;
+  async translate(): Promise<Translation> { this.calls++; return { ok: true, result: { kind: "none" }, usage: { inputTokens: 1_000_000, outputTokens: 2_000_000 } }; }
+}
+
+test("US4 scenarios 1 and 6: the twenty-first sentence of the day gets the limit line and no translation; past midnight UTC it is translated", async () => {
+  const { desk, telegram, translator, later } = await setup();
+  for (let i = 0; i < 20; i++) await desk.handleText("7", "7", `gm ${i}`);
+  await desk.handleText("7", "7", S.both);
+  assert.equal(lastSent(telegram).text, LINES.limit);
+  assert.equal(translator.calls.length, 20);
+  later(12 * 3_600_000);
+  await desk.handleText("7", "7", S.both);
+  assert.equal(translator.calls.length, 21, "a new UTC day starts the count again");
+  assert.ok(lastSent(telegram).text.endsWith(LINES.footer));
+});
+
+test("US4 scenario 2: one limit for every trader, counted per trader, whatever they hold", async () => {
+  const { desk, telegram, translator } = await setup({ limits: { daily: 2 } });
+  for (const tg of ["7", "7", "8", "8"]) await desk.handleText(tg, tg, "gm");
+  assert.equal(translator.calls.length, 4);
+  for (const tg of ["7", "8"]) { await desk.handleText(tg, tg, "gm"); assert.equal(lastSent(telegram).text, LINES.limit); }
+});
+
+test("US4 scenario 3: the day's spend passing the alert line tells the operator chat once; the next day can alert again", async () => {
+  const translator = new PricedTranslator();
+  const { desk, telegram, later, store } = await setup({ translator, limits: { alertUsd: 20, operatorChatId: "ops" } });
+  const toOps = () => telegram.sent.filter((o) => o.kind === "send" && o.chatId === "ops");
+  await desk.handleText("7", "7", "gm");
+  assert.equal(toOps().length, 0, "$11 is under the line");
+  await desk.handleText("7", "7", "gm");
+  await desk.handleText("7", "7", "gm");
+  assert.equal(toOps().length, 1, "the second call crosses the line; the third does not alert again");
+  assert.match((toOps()[0] as Sent).text, /passed \$20, \$22\.00 so far/);
+  assert.equal(store.spend.get("2026-10-22")?.usdMicros, 33_000_000n);
+  later(12 * 3_600_000);
+  await desk.handleText("7", "7", "gm"); await desk.handleText("7", "7", "gm");
+  assert.equal(toOps().length, 2);
+});
+
+test("US4 scenario 4: a translator past its budget gets the FR-021 line in time, places nothing, and costs no count and no spend; the log has the hash only", async () => {
+  const slow = new FakeTranslator(MAP, 200, 30);
+  const { desk, telegram, orders, store } = await setup({ translator: slow, limits: { daily: 1 } });
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...a: unknown[]) => { warned.push(a.join(" ")); };
+  const started = Date.now();
+  try { await desk.handleText("7", "7", S.both); } finally { console.warn = warn; }
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(lastSent(telegram).text, LINES.failed);
+  assert.equal((await open(orders)).length, 0);
+  assert.equal(store.counts.get("7:2026-10-22"), 0, "given back");
+  assert.equal(store.spend.size, 0);
+  assert.equal(warned.length, 1);
+  assert.ok(warned[0]!.includes(hashSentence("s", S.both).slice(0, 16)) && warned[0]!.includes("timeout"));
+  assert.ok(!warned[0]!.includes("pepe"), "never the words");
+  await desk.handleText("7", "7", S.both);
+  assert.equal(slow.calls.length, 2, "the failed one did not use the day's one sentence");
+});
+
+test("US4 scenario 5: a confirmed card keeps the hash, the held context and the accepted card; no table holds the words", async () => {
+  const { desk, telegram, store } = await setup();
+  await desk.handleText("7", "7", S.both);
+  await desk.handleCallback("7", "7", `sc:${cardId(telegram)}:ok`);
+  const [rec] = store.evals;
+  assert.equal(rec?.sentenceHash, hashSentence("s", S.both));
+  assert.deepEqual(rec?.context, { held: [{ symbol: "PEPE", tail: "00ce" }], perEth: { "00ce": PER_ETH.toString() } });
+  assert.deepEqual(rec?.accepted.map((p) => p.kind), ["tp", "sl"]);
+  const everything = JSON.stringify({ cards: [...store.cards.values()], pending: [...store.pending.values()], evals: store.evals, counts: [...store.counts] }, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+  assert.ok(!everything.includes("half my pepe"), "the sentence's words are nowhere at rest");
 });
