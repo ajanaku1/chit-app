@@ -1,13 +1,13 @@
 {
   "rule": "PROGRESS.md",
-  "generatedAt": "2026-10-20T15:47:19.905Z",
-  "commit": "2b451e7",
-  "committedAt": "2026-10-20T16:39:18+01:00",
-  "commits": 912,
+  "generatedAt": "2026-10-22T10:00:10.020Z",
+  "commit": "4528ae2",
+  "committedAt": "2026-10-22T10:53:20+01:00",
+  "commits": 948,
   "tasks": {
-    "done": 174,
+    "done": 201,
     "total": 220,
-    "percent": 79
+    "percent": 91
   },
   "stages": [
     {
@@ -257,154 +257,46 @@
     {
       "id": "006-agent-sentences",
       "title": "A sentence becomes orders",
-      "done": 0,
+      "done": 27,
       "total": 30,
       "phases": [
         {
           "name": "Setup",
-          "done": 0,
+          "done": 3,
           "total": 3
         },
         {
           "name": "Foundational",
-          "done": 0,
+          "done": 5,
           "total": 5
         },
         {
           "name": "User Story 1 - Say it, see it, confirm it",
-          "done": 0,
+          "done": 6,
           "total": 6
         },
         {
           "name": "User Story 2 - One question when something is missing",
-          "done": 0,
+          "done": 3,
           "total": 3
         },
         {
           "name": "User Story 3 - Nothing placed by mistake",
-          "done": 0,
+          "done": 4,
           "total": 4
         },
         {
           "name": "User Story 4 - It stays cheap and safe to run",
-          "done": 0,
+          "done": 3,
           "total": 3
         },
         {
           "name": "Polish and cross-cutting",
-          "done": 0,
+          "done": 3,
           "total": 6
         }
       ],
       "open": [
-        {
-          "id": "T001",
-          "text": "Create branch `feat/agent-sentences` from `main` and confirm `npm run test:fleet` is green before any change"
-        },
-        {
-          "id": "T002",
-          "text": "[P] Add `test/fleet/eval/sentences.json` as an empty array and `scripts/sentence-eval-add.mjs` that reads a sentence and its label from argv, hashes with `BOT_KEY_SECRET`"
-        },
-        {
-          "id": "T003",
-          "text": "[P] Document the env contract in `src/fleet/bot-runtime.ts`'s header comment from `specs/006-agent-sentences/contracts/env.md`"
-        },
-        {
-          "id": "T004",
-          "text": "Extract the preflight and `Order` construction from `#placeOrder`, `#placeExit` and `#placeShield` in `src/fleet/bot-session.ts` into `src/fleet/bot-order-build.ts`: `buildExit`, `buildBuy`, `buildShield`, each returning `{ ok: true, order, line }` or `{ ok: false, reason, buttons }` and performing exactly the reads the originals do"
-        },
-        {
-          "id": "T005",
-          "text": "Rewire the three private methods in `src/fleet/bot-session.ts` to call `bot-order-build.ts` and only send what it returns. `done_when`: `npm run test:fleet` green, no test edited, the diff of T004 plus T005 under 200 lines each."
-        },
-        {
-          "id": "T006",
-          "text": "Write `test/fleet/bot-order-build.test.ts` covering each refusal path"
-        },
-        {
-          "id": "T007",
-          "text": "Create `src/fleet/bot-sentence-store.ts` with the five tables from `data-model.md`"
-        },
-        {
-          "id": "T008",
-          "text": "Write `test/fleet/bot-sentence-store.test.ts` on PGlite"
-        },
-        {
-          "id": "T009",
-          "text": "[P] [US1] Write `test/fleet/bot-sentence-translate.test.ts`: the schema checker accepts the contract's three result shapes and rejects extra fields, an address in `tokenText` is not resolved unless pasted, a result with four proposals is cut to three with the \"three at a time\" note, abort after the budget yields the FR-021 outcome, malformed output yields `none`, usage maps to micro-dollars at given prices. `done_when`: green against `src/fleet/bot-sentence-translate.ts`"
-        },
-        {
-          "id": "T010",
-          "text": "[P] [US1] Write `test/fleet/bot-sentences.test.ts` with the US1 scenarios 1 to 6"
-        },
-        {
-          "id": "T011",
-          "text": "[P] [US1] Create `src/fleet/bot-sentence-translate.ts`: the `Translator` interface and `TranslationResult` types from `data-model.md`; `createAnthropicTranslator"
-        },
-        {
-          "id": "T012",
-          "text": "[US1] Create `src/fleet/bot-sentences.ts` with `SentenceDesk`: `handleText"
-        },
-        {
-          "id": "T013",
-          "text": "[US1] Add `handleCallback"
-        },
-        {
-          "id": "T014",
-          "text": "[US1] Route in `src/fleet/bot-session.ts`: after the pasted-address check in the text handler, hand the text to the desk when one is configured; in the callback switch, dispatch `sc:` and `sq:` verbs to the desk before the existing cases; a sentence from a group chat is ignored"
-        },
-        {
-          "id": "T015",
-          "text": "[P] [US2] Add the US2 scenarios 1 to 5 and the FR-012a interval case to `test/fleet/bot-sentences.test.ts`: two held PEPEs → token question with tails; bare \"pepe at 50%\" → direction question; a new sentence drops the pending question; second miss → \"I did not get that. Try: sell half my PEPE if it drops 20%.\"; \"gm\", \"is pepe good\", \"thanks\" → hint, no question, no card. `done_when`: green against T016 and T017."
-        },
-        {
-          "id": "T016",
-          "text": "[US2] In `src/fleet/bot-sentences.ts`, handle `TranslationResult.kind === \"question\"` and the bot's own ambiguities"
-        },
-        {
-          "id": "T017",
-          "text": "[US2] In `src/fleet/bot-sentences.ts`, answer `sq:` taps: consume the pending row"
-        },
-        {
-          "id": "T018",
-          "text": "[P] [US3] Add the US3 scenarios 1 to 10 to `test/fleet/bot-sentences.test.ts`: not held → \"you hold no DOGE in this account\"; 150% → clamped line; same kind open → Replace/Add both/Cancel with Replace closing the old order and Add leaving it; different kind open → placed beside, no question; second shield → \"already on\"; 6% move on Confirm → re-render, nothing placed; second Confirm → \"already placed\"; expiry → the expired wording; paused session → \"will wait until you resume\"; no account → Connect prompt; buy over per-trade cap → cap shown and clamped, zero cap → refusal; ceiling of ten → existing line. `done_when`: green against T019 to T021."
-        },
-        {
-          "id": "T019",
-          "text": "[US3] In `src/fleet/bot-sentences.ts`, before rendering: the not-held refusal"
-        },
-        {
-          "id": "T020",
-          "text": "[US3] In `src/fleet/bot-sentences.ts`, on Confirm/Replace/Add: read `reads.tokenInfo"
-        },
-        {
-          "id": "T021",
-          "text": "[US3] In `src/fleet/bot-orders-runtime.ts`, after the order run, sweep `bot_sentence_cards` for `proposed` rows older than ten minutes: transition to `expired` and edit each message to the expired wording"
-        },
-        {
-          "id": "T022",
-          "text": "[P] [US4] Add the US4 scenarios 1 to 6 to `test/fleet/bot-sentences.test.ts`: twenty-first → limit line and `FakeTranslator` call count unchanged; limit identical for every trader with any balance"
-        },
-        {
-          "id": "T023",
-          "text": "[US4] In `src/fleet/bot-sentences.ts`, before the translator: `incrementCount"
-        },
-        {
-          "id": "T024",
-          "text": "[US4] In `src/fleet/bot-sentence-translate.ts` and `bot-sentences.ts`: the abort and error paths produce the FR-021 line, skip count and spend, and log only `{ hash, class, ms }`"
-        },
-        {
-          "id": "T025",
-          "text": "[P] Add the FR-025 line to the bot's about text in `src/fleet/bot-session.ts` and to `app/fleet-privacy.html`: \"a sentence you type is read once by an outside AI service to write the card; the words are not kept.\" `done_when`: both strings present; the privacy page renders; a `bot-session.test.ts` case asserts the about text contains it."
-        },
-        {
-          "id": "T026",
-          "text": "[P] Write `test/fleet/eval/sentences.test.ts`: skipped with a message while `sentences.json` has fewer than thirty entries; otherwise runs each hashed sentence's recorded context through the real translator when `ANTHROPIC_API_KEY` is set, else through `test/fleet/eval/fixture.json`"
-        },
-        {
-          "id": "T027",
-          "text": "Update `ROADMAP.md`"
-        },
         {
           "id": "T028",
           "text": "Run `/simplify` on the four new modules, then open the PR to `main` on `Chit-org/chit-fleet` with the baseline and final test counts, the env additions for the founder, and the kill switch; request Lucian's review; draft the drop's post in `marketing/CHIT-POSTS-<date>.md`"
