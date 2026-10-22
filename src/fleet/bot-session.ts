@@ -55,7 +55,7 @@ import type { CopyDesk } from "./bot-copy.js";
 import { CopyCards } from "./bot-copy-cards.js";
 import { heyLine, type HeyScanner } from "./bot-hey.js";
 import { issueNonce, type BotLinkStore } from "./bot-link.js";
-import { SentenceDesk } from "./bot-sentences.js";
+import { SentenceDesk, type SentenceLimits } from "./bot-sentences.js";
 import type { SentenceStore } from "./bot-sentence-store.js";
 import type { Translator } from "./bot-sentence-translate.js";
 import { buildBuy, buildExit, buildShield, btn, eth, fmt, kb, orderLine, permit2FixedCard, permit2FixedSale, toUnits, url, type OrderBuildDeps, type Retry } from "./bot-order-build.js";
@@ -106,7 +106,7 @@ export type SessionBotDeps = {
   /** Big-buy alerts (bot-alerts.ts): the user's line, read by the watcher's cron; absent, no 🔔 Alerts button. */
   alerts?: AlertStore;
   /** The sentence desk (bot-sentences.ts): plain DM text becomes a Proposed card; needs orders and positions too. Absent, free text gets the hint. */
-  sentences?: { translator: Translator; store: SentenceStore; secret: string };
+  sentences?: { translator: Translator; store: SentenceStore; secret: string; limits?: Partial<SentenceLimits> };
   botUsername: string;
   siteUrl: string;
   /** Per user, per UTC day: how many executes and how much gas the bot fronts. */

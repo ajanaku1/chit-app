@@ -43,6 +43,8 @@ export interface SentenceStore {
   dropPending(chatId: string): Promise<void>;
   /** One more sentence today for this trader, unless that would pass `limit`; the count after. */
   bump(tgId: string, day: string, limit: number): Promise<{ ok: boolean; n: number }>;
+  /** Gives one back: a translation that failed counts against no one's day (FR-021). Never below zero. */
+  unbump(tgId: string, day: string): Promise<void>;
   /** Adds one call's cost to the day; the day's total after. */
   addSpend(day: string, usdMicros: bigint): Promise<bigint>;
   /** True once per day: the caller that gets true sends the alert. */
@@ -106,6 +108,10 @@ export class MemorySentenceStore implements SentenceStore {
     if (n >= limit) return { ok: false, n };
     this.counts.set(key, n + 1);
     return { ok: true, n: n + 1 };
+  }
+  async unbump(tgId: string, day: string) {
+    const key = `${tgId}:${day}`, n = this.counts.get(key) ?? 0;
+    if (n > 0) this.counts.set(key, n - 1);
   }
   async addSpend(day: string, usdMicros: bigint) {
     const s = this.spend.get(day) ?? { usdMicros: 0n, calls: 0 };
@@ -190,6 +196,9 @@ export class NeonSentenceStore implements SentenceStore {
     if (r) return { ok: true, n: Number(r.n) };
     const [c] = await this.#q(`SELECT n FROM bot_sentence_counts WHERE tg_id = $1 AND day = $2`, [tgId, day]);
     return { ok: false, n: Number(c?.n ?? 0) };
+  }
+  async unbump(tgId: string, day: string) {
+    await this.#q(`UPDATE bot_sentence_counts SET n = n - 1 WHERE tg_id = $1 AND day = $2 AND n > 0`, [tgId, day]);
   }
   async addSpend(day: string, usdMicros: bigint) {
     const [r] = await this.#q(`INSERT INTO bot_sentence_spend (day, usd_micros, calls) VALUES ($1, $2, 1) ON CONFLICT (day) DO UPDATE SET usd_micros = bot_sentence_spend.usd_micros + EXCLUDED.usd_micros, calls = bot_sentence_spend.calls + 1 RETURNING usd_micros`, [day, usdMicros.toString()]);

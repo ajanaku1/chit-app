@@ -7,6 +7,7 @@
  * bot against what the account holds or an address pasted in the message.
  */
 
+import { createHmac } from "node:crypto";
 import type { Address } from "./types.js";
 
 export type OrderKind = "limit" | "dca" | "tp" | "sl" | "shield";
@@ -98,6 +99,13 @@ export const matchToken = (tokenText: string, held: { symbol: string; address: A
   const name = text.replace(/^\$/, "").toLowerCase();
   return name ? held.filter((h) => h.symbol.toLowerCase() === name).map((h) => h.address) : [];
 };
+
+/**
+ * HMAC-SHA256 over the lowercased, whitespace-collapsed sentence (research R8): a short sentence's plain hash is a
+ * dictionary away from its text, so the key is BOT_KEY_SECRET. The hash is all the bot keeps or logs of a sentence.
+ */
+export const hashSentence = (secret: string, text: string): string =>
+  createHmac("sha256", secret).update(text.toLowerCase().replace(/\s+/g, " ").trim()).digest("hex");
 
 /** USD per million tokens is micro-dollars per token: the call's cost in micro-dollars, rounded. */
 export const spendMicros = (usage: Usage, priceIn: number, priceOut: number): bigint =>

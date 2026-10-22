@@ -191,6 +191,7 @@ import { MemoryBotLinkStore, NeonBotLinkStore, type BotLinkStore } from "./bot-l
 import { MemoryOrderStore, NeonOrderStore, type OrderStore } from "./bot-orders.js";
 import { MemorySentenceStore, NeonSentenceStore } from "./bot-sentence-store.js";
 import { createAnthropicTranslator } from "./bot-sentence-translate.js";
+import type { SentenceLimits } from "./bot-sentences.js";
 import { createSessionChain } from "./bot-session-chain.js";
 import { SessionBot, type SessionBotDeps } from "./bot-session.js";
 import type { CopyStore } from "./bot-copy.js";
@@ -336,6 +337,21 @@ const boardFromSite = (site: string) => async (): Promise<BoardLike> => {
   return (await r.json()) as BoardLike;
 };
 
+/** BOT_SENTENCE_DAILY, BOT_SENTENCE_SPEND_ALERT_USD, BOT_SENTENCE_PRICE_IN and _OUT, each a positive number when set; MONITOR_CHAT_ID gets the alert. */
+const sentenceLimitsFromEnv = (): Partial<SentenceLimits> => {
+  const read = (name: string, whole: boolean): number | undefined => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return undefined;
+    const n = Number(raw);
+    if (!(n > 0) || (whole && !Number.isInteger(n))) refuse(`${name} must be a ${whole ? "whole " : ""}number above zero`);
+    return n;
+  };
+  const daily = read("BOT_SENTENCE_DAILY", true), alertUsd = read("BOT_SENTENCE_SPEND_ALERT_USD", false);
+  const priceIn = read("BOT_SENTENCE_PRICE_IN", false), priceOut = read("BOT_SENTENCE_PRICE_OUT", false);
+  const operatorChatId = process.env.MONITOR_CHAT_ID?.trim();
+  return { ...(daily ? { daily } : {}), ...(alertUsd ? { alertUsd } : {}), ...(priceIn ? { priceIn } : {}), ...(priceOut ? { priceOut } : {}), ...(operatorChatId ? { operatorChatId } : {}) };
+};
+
 /**
  * The sentence desk's model and tables (specs/006 contracts/env.md): built only with ANTHROPIC_API_KEY set and
  * BOT_SENTENCES_OFF not 1, and only with BOT_KEY_SECRET to key the hash; otherwise free text keeps the hint.
@@ -345,14 +361,15 @@ const sentencesFromEnv = (): SessionBotDeps["sentences"] => {
   if (!apiKey || process.env.BOT_SENTENCES_OFF === "1") return undefined;
   const secret = process.env.BOT_KEY_SECRET;
   if (!secret) { warnOnce("sentences", "ANTHROPIC_API_KEY is set but BOT_KEY_SECRET is not: the sentence desk needs it to hash sentences, so it is off"); return undefined; }
+  const limits = sentenceLimitsFromEnv();
   const translator = createAnthropicTranslator({ apiKey, model: process.env.BOT_SENTENCE_MODEL?.trim() || "claude-haiku-5-5", fetch: (input, init) => fetch(input, init) });
   const url = process.env.DATABASE_URL;
   if (url) {
     const sql = neon(url);
-    return { translator, secret, store: new NeonSentenceStore({ query: (query, params) => sql.query(query, params) as Promise<readonly Record<string, unknown>[]> }) };
+    return { translator, secret, limits, store: new NeonSentenceStore({ query: (query, params) => sql.query(query, params) as Promise<readonly Record<string, unknown>[]> }) };
   }
   if (process.env.BOT_MEMORY_STORE !== "1") refuse("DATABASE_URL is not set (BOT_MEMORY_STORE=1 allows a per-instance memory store on one machine only)");
-  return { translator, secret, store: new MemorySentenceStore() };
+  return { translator, secret, limits, store: new MemorySentenceStore() };
 };
 
 /** Session mode's standing orders (limit buys, DCA); the same store rule as the links. BOT_ORDERS_OFF=1 offers none. */

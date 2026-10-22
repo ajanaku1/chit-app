@@ -9,7 +9,6 @@
  * maths `buildExit` uses, so what the card shows is what the order gets.
  */
 
-import { createHmac } from "node:crypto";
 import type { Address } from "viem";
 import type { BotLinkStore } from "./bot-link.js";
 import { CEILING, SHIELD_ON, btn, buildBuy, buildExit, buildShield, eth, fmt, kb, orderLine, toUnits, type Built, type OrderBuildDeps, type Refusal, type Retry } from "./bot-order-build.js";
@@ -17,9 +16,9 @@ import { MAX_OPEN_ORDERS, type Order } from "./bot-orders.js";
 import type { PositionLedger } from "./bot-positions.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { sessionState } from "./session-keys.js";
-import type { SentenceCard, SentenceStore, StoredProposal } from "./bot-sentence-store.js";
+import { utcDay, type SentenceCard, type SentenceStore, type StoredProposal } from "./bot-sentence-store.js";
 import { apply, directionAsk, gap, intervalAsk, sizeAsk, tokenAsk, type Ask, type Draft } from "./bot-sentence-questions.js";
-import { matchToken, type Proposal, type TranslationResult, type Translator } from "./bot-sentence-translate.js";
+import { hashSentence, matchToken, spendMicros, type Proposal, type TranslationResult, type Translation, type Translator } from "./bot-sentence-translate.js";
 import { esc, type Keyboard, type Telegram } from "./bot-telegram.js";
 
 export type SentenceDeskDeps = {
@@ -35,11 +34,19 @@ export type SentenceDeskDeps = {
   hint: (chatId: string) => Promise<void>;
   /** The Connect prompt, for a trader with no linked account (FR-016). */
   connect: (chatId: string, tgId: string) => Promise<void>;
+  /** The day's limits and prices (contracts/env.md); absent fields take the defaults. */
+  limits?: Partial<SentenceLimits>;
 };
+
+/** One limit for every trader (FR-019), the day's spend that alerts the operator once (FR-020), and the per-million prices. */
+export type SentenceLimits = { daily: number; alertUsd: number; priceIn: number; priceOut: number; operatorChatId?: string };
+/** Prices are USD per million tokens, Haiku 4.5's list price; BOT_SENTENCE_PRICE_IN and _OUT set the model's real ones. */
+export const SENTENCE_DEFAULTS: SentenceLimits = { daily: 20, alertUsd: 20, priceIn: 1, priceOut: 5 };
 
 export const LINES = {
   footer: "runs from your account under your caps",
   failed: "I could not read that just now, the card still works.",
+  limit: "that is today's limit for sentences, the card still works.",
   unread: "I did not get that. Try: sell half my PEPE if it drops 20%.",
   mcap: "I work in price, not market cap.",
   three: "three at a time: the first three are on this card.",
@@ -53,10 +60,6 @@ export const LINES = {
   clamped: "size clamped to 100%",
   noCap: "your session allows no ETH a trade, so there is nothing to buy with. raise it on the Sessions page.",
 } as const;
-
-/** HMAC-SHA256 over the lowercased, whitespace-collapsed sentence: a short sentence's plain hash is a dictionary away from its text. */
-export const hashSentence = (secret: string, text: string): string =>
-  createHmac("sha256", secret).update(text.toLowerCase().replace(/\s+/g, " ").trim()).digest("hex");
 
 /** A token the account has traded, read at card time: the chain balance decides whether it is held (FR-012b). */
 type Candidate = { symbol: string; address: Address; decimals: number; balance: bigint; perEth: bigint; hasPool: boolean };
@@ -188,7 +191,8 @@ type Gate = { paused: boolean; capWei: bigint };
 
 export class SentenceDesk {
   readonly #d: SentenceDeskDeps;
-  constructor(d: SentenceDeskDeps) { this.#d = d; }
+  readonly #limits: SentenceLimits;
+  constructor(d: SentenceDeskDeps) { this.#d = d; this.#limits = { ...SENTENCE_DEFAULTS, ...d.limits }; }
 
   get #now(): Date { return this.#d.build.now(); }
 
@@ -205,13 +209,13 @@ export class SentenceDesk {
     const candidates = await this.#candidates(link.account);
     const held = candidates.filter((c) => c.balance > 0n);
     const hash = hashSentence(this.#d.secret, text);
-    const got = await this.#d.translator.translate({
+    const got = await this.#translate(tgId, hash, {
       sentence: text,
       held: held.map((c) => ({ symbol: c.symbol, tail: tail(c.address) })),
       now: Object.fromEntries(held.map((c) => [tail(c.address), { perEth: c.perEth.toString() }])),
     });
-    if (!got.ok) { console.warn(`sentence ${hash.slice(0, 12)}: ${got.failure}`); await this.#say(chatId, LINES.failed); return; }
-    if (got.malformed) console.warn(`sentence ${hash.slice(0, 12)}: malformed`);
+    if (got === "limit") { await this.#say(chatId, LINES.limit); return; }
+    if (!got.ok) { await this.#say(chatId, LINES.failed); return; }
     const r = got.result;
     if (r.kind === "none") return r.note === "mcap" ? void (await this.#say(chatId, LINES.mcap)) : this.#d.hint(chatId);
     if (r.kind === "question") return this.#question(chatId, tgId, hash, r, candidates, gate);
@@ -239,6 +243,34 @@ export class SentenceDesk {
     const partial = { missing: ask.missing, draft: draft.proposals, choices: ask.choices, labels: ask.labels, ...(draft.pinned ? { pinned: draft.pinned } : {}) };
     await this.#d.store.setPending({ chatId, tgId, sentenceHash: hash, partial, leaseUntil: new Date(this.#now.getTime() + LEASE_MS).toISOString() });
     await this.#say(chatId, ask.text, kb(...ask.labels.map((label, i) => [btn(label, `sq:${chatId}:${i}`)]), [btn("Cancel", `sq:${chatId}:x`)]));
+  }
+
+  /**
+   * The one model call, counted first (FR-019: past the limit there is no call) and given back if it fails (FR-021);
+   * an answer's cost goes on the day, and the day's first pass over the alert line tells the operator (FR-020). The
+   * log carries the hash, the class and the time, never the words (FR-022).
+   */
+  async #translate(tgId: string, hash: string, input: Parameters<Translator["translate"]>[0]): Promise<Translation | "limit"> {
+    const day = utcDay(this.#now);
+    if (!(await this.#d.store.bump(tgId, day, this.#limits.daily)).ok) return "limit";
+    const started = Date.now();
+    const got = await this.#d.translator.translate(input);
+    const ms = Date.now() - started;
+    if (!got.ok) {
+      await this.#d.store.unbump(tgId, day);
+      console.warn(`desk: ${JSON.stringify({ hash: hash.slice(0, 16), class: got.failure, ms })}`);
+      return got;
+    }
+    if (got.malformed) console.warn(`desk: ${JSON.stringify({ hash: hash.slice(0, 16), class: "malformed", ms })}`);
+    await this.#spend(day, spendMicros(got.usage, this.#limits.priceIn, this.#limits.priceOut));
+    return got;
+  }
+
+  async #spend(day: string, micros: bigint): Promise<void> {
+    const total = await this.#d.store.addSpend(day, micros);
+    const chat = this.#limits.operatorChatId;
+    if (!chat || total < BigInt(Math.round(this.#limits.alertUsd * 1_000_000)) || !(await this.#d.store.claimAlert(day, this.#now))) return;
+    await this.#d.telegram.deliver({ kind: "send", chatId: chat, text: `sentence desk: today's translation spend passed $${this.#limits.alertUsd}, $${(Number(total) / 1_000_000).toFixed(2)} so far (${day} UTC). one alert a day.` }).catch(() => undefined);
   }
 
   /** A new sentence drops the chat's question and expires its open card, in the message too (FR-009). */
