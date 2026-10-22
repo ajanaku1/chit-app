@@ -9,6 +9,8 @@ import { MemoryOrderStore } from "../../src/fleet/bot-orders.js";
 import { handleOrdersRequest, setOrdersDepsForTests } from "../../src/fleet/bot-orders-runtime.js";
 import type { SessionChain } from "../../src/fleet/bot-session-chain.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
+import { MemorySentenceStore } from "../../src/fleet/bot-sentence-store.js";
+import { LINES } from "../../src/fleet/bot-sentences.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
 const ACCOUNT = "0x00000000000000000000000000000000000000aa" as Address;
@@ -109,6 +111,29 @@ test("the same pass tells an owner whose session ends within three days, once, w
     assert.match(telegram.last(), /your session with the bot ends in 48 hours/);
     await handleOrdersRequest(req("Bearer s3cret-s3cret-s3cret"), clock);
     assert.equal(telegram.sent.length, 1, "once");
+  } finally {
+    if (saved === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = saved;
+    setOrdersDepsForTests({});
+  }
+});
+
+test("the same pass sweeps sentence cards: two Proposed past ten minutes become expired in their messages, a fresh one stays", async () => {
+  const sentences = new MemorySentenceStore();
+  const telegram = new RecordingTelegram();
+  const session = { chainId: 4663, signer: "0x00000000000000000000000000000000000000b0" } as unknown as SessionChain;
+  setOrdersDepsForTests({ orders: new MemoryOrderStore(), links: new MemoryBotLinkStore(), session, telegram, reads: {} as unknown as BotChain, sentences });
+  const at = (min: number) => new Date(clock.getTime() - min * 60_000).toISOString();
+  for (const [chat, ago, msg] of [["8", 30, 41], ["9", 11, 42], ["10", 2, 43]] as const) {
+    const card = await sentences.createCard({ chatId: chat, tgId: chat, sentenceHash: "h", token: PEPE, perEthAtCard: 1n, proposals: [], createdAt: at(ago) });
+    await sentences.setMessage(card!.id, msg);
+  }
+  const saved = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = "s3cret-s3cret-s3cret";
+  try {
+    assert.equal((await handleOrdersRequest(req("Bearer s3cret-s3cret-s3cret"), clock)).status, 200);
+    assert.deepEqual(telegram.sent.map((o) => [o.kind, (o as { messageId?: number }).messageId, (o as { text?: string }).text]), [["edit", 41, LINES.expired], ["edit", 42, LINES.expired]]);
+    assert.equal((await sentences.proposedIn("10"))?.chatId, "10");
+    assert.equal(await sentences.proposedIn("8"), undefined);
   } finally {
     if (saved === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = saved;
     setOrdersDepsForTests({});

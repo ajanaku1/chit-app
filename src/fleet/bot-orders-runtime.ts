@@ -50,6 +50,8 @@ import { MemoryOrderStore, NeonOrderStore, OrderRunner, type OrderStore } from "
 import { ExpiryNotifier, MemoryExpiryNoteStore, NeonExpiryNoteStore, type ExpiryNoteStore } from "./bot-expiry.js";
 import { createSessionChain, type SessionChain } from "./bot-session-chain.js";
 import { createTelegram, type Telegram } from "./bot-telegram.js";
+import { MemorySentenceStore, NeonSentenceStore, type SentenceStore } from "./bot-sentence-store.js";
+import { sweepCards } from "./bot-sentences.js";
 import { sweepTriggerAllowed } from "./sweep-trigger.js";
 
 /** Uniswap v4 on Robinhood Chain, as bot-runtime has them (specs/001-fleet-mission/research.md). */
@@ -60,9 +62,11 @@ const VENUE_TOKEN: Address = "0x13283ab8e1f2bc4297e9ec6480c80c59674af554";
 const MAINNET = 4663;
 const TESTNET = 46630;
 
-export type OrdersRuntimeOverrides = { orders?: OrderStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: ReturnType<typeof createBotChain>; notes?: ExpiryNoteStore };
+export type OrdersRuntimeOverrides = { orders?: OrderStore; links?: BotLinkStore; session?: SessionChain; telegram?: Telegram; reads?: ReturnType<typeof createBotChain>; notes?: ExpiryNoteStore; sentences?: SentenceStore };
 
-let built: { runner: OrderRunner; expiry: ExpiryNotifier } | undefined;
+/** The run's parts; the sentence cards are swept on the same tick (bot_sentence_cards, research R5). */
+type Built = { runner: OrderRunner; expiry: ExpiryNotifier; sentences: SentenceStore; telegram: Telegram };
+let built: Built | undefined;
 let overrides: OrdersRuntimeOverrides = {};
 let inFlight: Promise<Response> | undefined;
 
@@ -79,7 +83,7 @@ const sqlFromEnv = () => {
   return undefined;
 };
 
-const build = (): { runner: OrderRunner; expiry: ExpiryNotifier } => {
+const build = (): Built => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token && !overrides.telegram) refuse("TELEGRAM_BOT_TOKEN is not set");
   const signerKey = process.env.BOT_SIGNER_PRIVATE_KEY;
@@ -116,7 +120,8 @@ const build = (): { runner: OrderRunner; expiry: ExpiryNotifier } => {
     ...(dailyExecutes !== undefined ? { dailyExecutes } : {}),
     ...(dailyGas ? { dailyGasWei: parseEther(dailyGas) } : {}),
   });
-  return { runner, expiry };
+  const sentences = overrides.sentences ?? (sql ? new NeonSentenceStore(sql) : new MemorySentenceStore());
+  return { runner, expiry, sentences, telegram };
 };
 
 /** For tests: the runner's parts from outside, and a fresh build on the next request. */
@@ -144,6 +149,9 @@ export const handleOrdersRequest = async (request: Request, now = new Date()): P
       // The sessions' ends after the orders, so a slow pass of reads never holds an order back; a failure here never fails the pass.
       const told = await built.expiry.run(now).catch((e: unknown) => { console.error(`bot expiry: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`); return undefined; });
       if (told && told.soon + told.ended > 0) console.log(`bot expiry: ${JSON.stringify(told)}`);
+      // Sentence cards past their ten minutes are expired, in the message too; a failure here never fails the pass either.
+      const swept = await sweepCards(built.sentences, built.telegram, now).catch((e: unknown) => { console.error(`bot sentence cards: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`); return 0; });
+      if (swept > 0) console.log(`bot sentence cards: ${swept} expired`);
       return json({ state: "ran", ...report }, 200);
     } catch (e) {
       if (e instanceof ConfigFault) return json({ state: "not_configured", reason: e.message }, 503);
