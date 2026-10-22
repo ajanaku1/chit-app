@@ -1,11 +1,11 @@
 {
   "rule": "PROGRESS.md",
-  "generatedAt": "2026-10-22T10:00:10.020Z",
-  "commit": "4528ae2",
-  "committedAt": "2026-10-22T10:53:20+01:00",
-  "commits": 948,
+  "generatedAt": "2026-10-22T10:08:33.077Z",
+  "commit": "9309bb0",
+  "committedAt": "2026-10-22T11:00:20+01:00",
+  "commits": 949,
   "tasks": {
-    "done": 201,
+    "done": 202,
     "total": 220,
     "percent": 91
   },
@@ -257,7 +257,7 @@
     {
       "id": "006-agent-sentences",
       "title": "A sentence becomes orders",
-      "done": 27,
+      "done": 28,
       "total": 30,
       "phases": [
         {
@@ -292,15 +292,11 @@
         },
         {
           "name": "Polish and cross-cutting",
-          "done": 3,
+          "done": 4,
           "total": 6
         }
       ],
       "open": [
-        {
-          "id": "T028",
-          "text": "Run `/simplify` on the four new modules, then open the PR to `main` on `Chit-org/chit-fleet` with the baseline and final test counts, the env additions for the founder, and the kill switch; request Lucian's review; draft the drop's post in `marketing/CHIT-POSTS-<date>.md`"
-        },
         {
           "id": "T029",
           "text": "Founder: add `ANTHROPIC_API_KEY` to chit-app production, set `BOT_SENTENCES_OFF=1`, deploy; run quickstart.md steps 2 to 8 with the switch off then on, and time ten sentences from send to card"
