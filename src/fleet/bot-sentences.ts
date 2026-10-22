@@ -145,3 +145,83 @@ export const cardText = (card: SentenceCard, c: Candidate, cut: boolean, tailLin
   tailLine,
 ].join("\n");
 
+export class SentenceDesk {
+  readonly #d: SentenceDeskDeps;
+  constructor(d: SentenceDeskDeps) { this.#d = d; }
+
+  get #now(): Date { return this.#d.build.now(); }
+
+  async #say(chatId: string, text: string, keyboard: Keyboard = kb([btn("← Back", "home")])): Promise<number | undefined> {
+    return (await this.#d.telegram.deliver({ kind: "send", chatId, text, keyboard }))?.messageId;
+  }
+
+  /** A sentence from the DM: translated once (FR-023), answered with one card, a line, or the hint. */
+  async handleText(chatId: string, tgId: string, text: string): Promise<void> {
+    const link = await this.#d.links.getLink(tgId);
+    if (!link) return this.#d.connect(chatId, tgId);
+    await this.#expireOpen(chatId);
+    const candidates = await this.#candidates(link.account);
+    const held = candidates.filter((c) => c.balance > 0n);
+    const hash = hashSentence(this.#d.secret, text);
+    const got = await this.#d.translator.translate({
+      sentence: text,
+      held: held.map((c) => ({ symbol: c.symbol, tail: tail(c.address) })),
+      now: Object.fromEntries(held.map((c) => [tail(c.address), { perEth: c.perEth.toString() }])),
+    });
+    if (!got.ok) { console.warn(`sentence ${hash.slice(0, 12)}: ${got.failure}`); await this.#say(chatId, LINES.failed); return; }
+    if (got.malformed) console.warn(`sentence ${hash.slice(0, 12)}: malformed`);
+    const r = got.result;
+    if (r.kind === "none") return r.note === "mcap" ? void (await this.#say(chatId, LINES.mcap)) : this.#d.hint(chatId);
+    if (r.kind === "question") { await this.#say(chatId, LINES.unread); return; }
+    return this.#card(chatId, tgId, hash, r.proposals, r.cut === true, candidates);
+  }
+
+  /** A new sentence drops the chat's question and expires its open card, in the message too (FR-009). */
+  async #expireOpen(chatId: string): Promise<void> {
+    await this.#d.store.dropPending(chatId);
+    const open = await this.#d.store.proposedIn(chatId);
+    if (!open || !(await this.#d.store.transition(open.id, "expired", this.#now)) || open.messageId === undefined) return;
+    await this.#d.telegram.deliver({ kind: "edit", chatId, messageId: open.messageId, text: LINES.expired, keyboard: kb() });
+  }
+
+  /** The tokens the account has traded, from the ledger, with the chain's balance and price for each now. */
+  async #candidates(account: Address): Promise<Candidate[]> {
+    const tokens = [...new Set((await this.#d.positions.forAccount(account)).map((t) => t.token.toLowerCase() as Address))];
+    return Promise.all(tokens.map((address) => this.#candidate(address, account)));
+  }
+
+  /** The one token every proposal names: a sell among the held, a buy among anything traded (research R3); else the line. */
+  #tokenFor(proposals: Proposal[], candidates: Candidate[]): Candidate | string {
+    const found = new Set<Candidate>();
+    for (const p of proposals) {
+      const pool = SELLS.includes(p.kind) ? candidates.filter((c) => c.balance > 0n) : candidates;
+      const hits = matchToken(p.tokenText, pool);
+      if (hits.length === 0 && SELLS.includes(p.kind)) return `you hold no ${esc(p.tokenText.replace(/^\$/, "").toUpperCase())} in this account.`;
+      if (hits.length !== 1) return LINES.unread;
+      found.add(pool.find((c) => c.address === hits[0])!);
+    }
+    return found.size === 1 ? [...found][0]! : LINES.unread;
+  }
+
+  async #card(chatId: string, tgId: string, hash: string, proposals: Proposal[], cut: boolean, candidates: Candidate[]): Promise<void> {
+    const c = this.#tokenFor(proposals, candidates);
+    if (typeof c === "string") { await this.#say(chatId, c); return; }
+    if (!c.hasPool) { await this.#say(chatId, "no ETH pool on the venue for this token, so nothing to order."); return; }
+    const stored: StoredProposal[] = [];
+    for (const p of proposals) {
+      const s = toStored(p, c);
+      if (typeof s === "string") { await this.#say(chatId, s); return; }
+      stored.push(s);
+    }
+    const card = await this.#d.store.createCard({ chatId, tgId, sentenceHash: hash, token: c.address, perEthAtCard: c.perEth, proposals: stored, createdAt: this.#now.toISOString() });
+    if (!card) { await this.#say(chatId, LINES.unread); return; }
+    const messageId = await this.#say(chatId, cardText(card, c, cut), kb([btn("Confirm", `sc:${card.id}:ok`), btn("Cancel", `sc:${card.id}:no`)]));
+    if (messageId !== undefined) await this.#d.store.setMessage(card.id, messageId);
+  }
+
+  async #candidate(address: Address, account: Address): Promise<Candidate> {
+    const [info, balance] = await Promise.all([this.#d.build.reads.tokenInfo(address), this.#d.build.reads.tokenBalance(address, account)]);
+    return { symbol: info.symbol, address, decimals: info.decimals, balance, perEth: info.perEth, hasPool: info.hasPool };
+  }
+
+}
