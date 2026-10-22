@@ -63,7 +63,7 @@ What 0G offers, from its docs and its own build page: an OpenAI-compatible endpo
 
 Read against our use:
 
-- **Fit:** the job is extraction (one sentence to a typed order). An open 30B to 120B model can do that. No Claude on 0G, so it is a different model, not Haiku behind a TEE.
+- **Fit:** the job is extraction (one sentence to a typed order). An open 30B to 120B model can do that. No Haiku on 0G. (Corrected 22 October: this first read covered only the Compute Network. 0G Private Computer lists ten Claude models, Sonnet 4.5 to Opus 5.5 and Fable 5.1, none with Haiku, none with the TEE badge, the cheapest Sonnet 5 at $1.90 in and $9.50 out per million tokens. So 0G gives either Claude without the enclave or an open model inside it.)
 - **Cost:** in the same band as Haiku on paper, unknown in practice, and paid in a volatile token we would have to hold and top up.
 - **Privacy:** real only in Private mode on the few TEE providers. And the order the user writes ends up in our database the moment it becomes a TP/SL, so the TEE protects the prompt in flight, not the fact of the trade. The honest claim would be "the model never sees your prompt in the clear", not "private trading".
 - **Ops:** a wallet, a ledger, provider health, 429s at 30 a minute, batch settlement. All new surface for a two-person team.
@@ -101,3 +101,4 @@ The group asked for daily presence and a push on X. Two posts today, both in the
 | 2026-10-20 | Decided with stakeholders. This page written. ROADMAP.md "Right now" updated |
 | 2026-10-20 | Founder: the direction runs on fees (fees on moves to step two), the bot opens to everyone (PR #167), no mini app yet, 0G compute checked and parked behind Haiku |
 | 2026-10-20 | Founder: private funding stays, it is the moat. R74 moves the pool deposit into the bot; the balance page stays until then; the pool and its sweep are not removed |
+| 2026-10-22 | Founder: stay on Haiku direct. The "no Claude on 0G" line corrected above. R67 built on PR #168; the translator speaks Anthropic's Messages format, which 0G's Claude entries also use, so a later switch is likely a base URL and a key (not yet checked against 0G's API docs) |

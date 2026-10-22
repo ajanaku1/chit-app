@@ -66,7 +66,7 @@ A drop is done at **announced**, nothing earlier.
 | CoinGecko and CoinMarketCap listings | campaign | Founder | planned | the forms |
 | extend(key, expiry) on the next SessionAccount factory, so Renew is one tap | Lucian raised 9 Oct | Founder decision | open | a yes or a no |
 | Tokenized equities from Telegram | R65 | Founder | held | the liquidity and issuer-terms check |
-| Chit agents: one sentence becomes orders, exits first | R67, R68 | Claude, Lucian reviews | planned | docs/direction-2026-10-20.md |
+| Chit agents: one sentence becomes orders, exits first | R67, R68 | Claude, Lucian reviews | built, in review (PR #168), off until the founder adds the key | docs/direction-2026-10-20.md, specs/006-agent-sentences |
 | Arena: agents and people on one board, season 2 humans vs AI | R69 | Claude, Founder | planned | R67 |
 | Follow an agent, creator share, lock to list, Orus as an outside agent | R70 to R72 | Claude, Lucian | held | fees on, legal check |
 | Private funding in the bot: deposit to the pool from any wallet or chain, the pool funds your session account | R74 | Claude, Lucian | planned | with R67; before the balance page goes |
@@ -111,3 +111,4 @@ Multi-wallet buys at launch to make a token look wanted. Any auto-buy before Oru
 | 2026-10-10 | #146 (links, merged main in after #151 to #156) and #147 (front door) merged. chit-app deployed from 00a9edb: links, front door, take profit and stop loss, session expiry, alerts all live. `BOT_LAUNCHPAD_FACTORY` was already set |
 | 2026-10-20 | chit-mainnet Neon quota outage (bot down about an hour), plan upgraded. #165 opened (RPC 10M-block log cap). Direction decided with stakeholders: Telegram only, then agents; docs/direction-2026-10-20.md |
 | 2026-10-21 | #169 (burn page: buyback logs in spans under the RPC's caps) merged, deployed to chit-app and chit-testnet; chit.tools/burn live again. Ideas R75 to R89 checked against the code and added (docs/ideas-2026-10-21.md); TP ladder folded into R67, gift a bag dropped |
+| 2026-10-22 | R67/R68 built on PR #168 (specs/006, 26 of 30 tasks): a sentence becomes one card, Confirm places through the buttons' preflight, one question when something is missing, refusals and clamps, Replace or Add both, the 5% re-check, card expiry, 20 sentences a day, one spend alert a day, no words kept. Standing orders now wait through a paused session instead of failing after three refusals. Off until ANTHROPIC_API_KEY is on chit-app |
