@@ -289,7 +289,7 @@ export class SessionBot {
     // alerts: the card, on, off and the line prompt (bot-alert-cards.ts).
     if (this.#alerts?.owns(verb ?? "")) { await ack(); return this.#alerts.callback(chatId, tgId, verb!, a); }
     // sentences: Confirm and Cancel on a card, answers to its question (contracts/callbacks.md); the toast is the desk's.
-    if (this.#sentences && (verb === "sc" || verb === "sq")) { await ack(await this.#sentences.handleCallback(chatId, tgId, data)); return; }
+    if (this.#sentences && (data.startsWith("sc:") || data.startsWith("sq:"))) { await ack(await this.#sentences.handleCallback(chatId, tgId, data)); return; }
     switch (verb) {
       case "home": await ack(); return this.#home(chatId, tgId, messageId);
       // A tap that lands while the last read is still going is answered and dropped: one read per person, and no pile of them on the RPC.
