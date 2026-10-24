@@ -371,6 +371,22 @@ test("US3 scenario 10 and the ceiling: a buy over the per-trade cap is cut to it
   noPersona(telegram);
 });
 
+test("the ceiling again at Confirm: orders set between card and Confirm count, so the card cannot pass ten; nothing is placed and the card stays", async () => {
+  const { desk, telegram, orders } = await setup();
+  const put = async (n: number) => { for (let i = 0; i < n; i++) await orders.put({ id: newOrderId(), tgId: "7", account: ACCOUNT, chainId: 4663, token: WIF, kind: "limit", ethWei: 1n, triggerPerEth: 1n, createdAt: clock.toISOString(), status: "open", refusals: 0 }); };
+  await put(MAX_OPEN_ORDERS - 3);
+  await desk.handleText("7", "7", S.both);
+  const id = cardId(telegram);
+  await put(2);
+  assert.equal(await desk.handleCallback("7", "7", `sc:${id}:ok`), undefined);
+  assert.equal(lastSent(telegram).text, CEILING, "nine open now and two on the card");
+  assert.equal((await open(orders)).length, MAX_OPEN_ORDERS - 1, "nothing placed");
+  const [first] = await open(orders);
+  await orders.cancel(first!.id);
+  await desk.handleCallback("7", "7", `sc:${id}:ok`);
+  assert.equal((await open(orders)).length, MAX_OPEN_ORDERS, "with one closed the same card places");
+});
+
 /** A translator whose every answer costs the same: a million input tokens and two million output, $11 at $1 and $5. */
 class PricedTranslator implements Translator {
   calls = 0;

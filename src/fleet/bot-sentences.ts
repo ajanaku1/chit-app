@@ -422,6 +422,9 @@ export class SentenceDesk {
     if (drift * B > MOVED_BPS * card.perEthAtCard) return this.#moved(card, c, gate, existing);
     const built = await this.#buildAll(card, link.account, c.decimals, gate);
     if (!Array.isArray(built)) { await this.#say(card.chatId, built.reason, built.buttons); return undefined; }
+    // Each build counted the open orders on its own, so orders set since the card could pass the ceiling together.
+    const open = (await this.#d.build.orders.openFor(card.tgId, this.#d.build.session.chainId)).length - (replace && existing ? 1 : 0);
+    if (open + built.length > MAX_OPEN_ORDERS) { await this.#say(card.chatId, CEILING, kb([btn("📋 Orders", "orders")])); return undefined; }
     if (!(await this.#d.store.transition(card.id, "placed", this.#now))) return this.#byState(card.id);
     if (replace && card.existingOrderId) await this.#d.build.orders.cancel(card.existingOrderId);
     for (const order of built) await this.#d.build.orders.put(order);

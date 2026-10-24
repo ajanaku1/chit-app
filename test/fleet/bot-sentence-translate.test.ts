@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Address } from "viem";
-import { checkResult, createAnthropicTranslator, FakeTranslator, matchToken, PROPOSE_ORDERS, spendMicros, type Proposal } from "../../src/fleet/bot-sentence-translate.js";
+import { checkResult, createAnthropicTranslator, FakeTranslator, matchToken, PROPOSE_ORDERS, rejectsForcedTool, spendMicros, systemText, type Proposal } from "../../src/fleet/bot-sentence-translate.js";
 
 const PEPE = "0x00000000000000000000000000000000000000ce" as Address;
 const WIF = "0x00000000000000000000000000000000000000cf" as Address;
@@ -82,4 +82,13 @@ test("usage prices in micro-dollars at the given per-million prices", () => {
   assert.equal(spendMicros({ inputTokens: 900, outputTokens: 60 }, 1, 5), 1_200n);
   assert.equal(spendMicros({ inputTokens: 0, outputTokens: 0 }, 1, 5), 0n);
   assert.equal(spendMicros({ inputTokens: 1_000_000, outputTokens: 0 }, 0.8, 4), 800_000n, "a million input tokens at $0.80 is 80 cents");
+});
+
+test("models that reject a forced tool call are named, so the runtime refuses them; Haiku 5.5 and the older 5s are not", () => {
+  for (const m of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5-20261001"]) assert.equal(rejectsForcedTool(m), true, m);
+  for (const m of ["claude-haiku-5-5", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-5-50"]) assert.equal(rejectsForcedTool(m), false, m);
+});
+
+test("the prompt says percent levels are signed, negative below the price now", () => {
+  assert.match(systemText([]), /Percent levels are signed: negative is below the price now/);
 });

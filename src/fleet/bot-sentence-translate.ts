@@ -145,6 +145,7 @@ export const PROPOSE_ORDERS = {
 export const systemText = (held: TranslateInput["held"]): string => [
   "You turn one message from a trader into orders for a Telegram trading bot. Answer only through the propose_orders tool.",
   "Order kinds: limit (buy: size.eth, level as eth per token or percent below now), dca (buy: size.eth each, every hourly/daily/weekly, count 1-30), tp (sell: size.pct of the position, level as a multiple like 2 or a percent up), sl (sell: size.pct, level as a percent down), shield (sell all if the pool is pulled; no size, no level).",
+  "Percent levels are signed: negative is below the price now, positive is above it (a stop at minus 30 is -30, a take profit at 50% up is 50, a limit 20% below is -20).",
   "tokenText is the token exactly as the trader wrote it. Never write an address unless the trader pasted one.",
   "Return none for anything that is not an instruction. Return a question when the token, the size or the direction is missing; never guess.",
   "Market cap levels are not supported: return none with note \"mcap\".",
@@ -159,6 +160,12 @@ const readReply = (reply: AnthropicReply): Translation => {
   const result = call ? checkResult(call.input) : undefined;
   return result ? { ok: true, result, usage } : { ok: true, result: NONE, usage, malformed: true };
 };
+
+/**
+ * Models that reject a forced tool_choice with a 400 (platform docs, "Forcing tool use"): every call on them would
+ * fail, so the runtime refuses them at startup rather than answering each sentence with the failure line.
+ */
+export const rejectsForcedTool = (model: string): boolean => /^claude-(opus-5-5|sonnet-5-5|fable-5-1|mythos-5-1)\b/.test(model);
 
 export type AnthropicConfig = { apiKey: string; model: string; fetch: typeof fetch; budgetMs?: number; url?: string };
 

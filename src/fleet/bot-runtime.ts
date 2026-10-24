@@ -153,7 +153,8 @@
  *                                Without it the desk is not built and free
  *                                text keeps today's hint. Added by the founder
  *   BOT_SENTENCES_OFF            1 disables the desk without removing the key
- *   BOT_SENTENCE_MODEL           model id; default claude-haiku-5-5
+ *   BOT_SENTENCE_MODEL           model id; default claude-haiku-5-5. Models that
+ *                                reject a forced tool call refuse at startup
  *   BOT_SENTENCE_DAILY           sentences per trader per UTC day, one limit
  *                                for everyone; default 20
  *   BOT_SENTENCE_SPEND_ALERT_USD the day's spend that sends one alert to
@@ -190,7 +191,7 @@ import { MemoryBotWalletStore, NeonBotWalletStore, secretIsStrong, type BotWalle
 import { MemoryBotLinkStore, NeonBotLinkStore, type BotLinkStore } from "./bot-link.js";
 import { MemoryOrderStore, NeonOrderStore, type OrderStore } from "./bot-orders.js";
 import { MemorySentenceStore, NeonSentenceStore } from "./bot-sentence-store.js";
-import { createAnthropicTranslator } from "./bot-sentence-translate.js";
+import { createAnthropicTranslator, rejectsForcedTool } from "./bot-sentence-translate.js";
 import type { SentenceLimits } from "./bot-sentences.js";
 import { createSessionChain } from "./bot-session-chain.js";
 import { SessionBot, type SessionBotDeps } from "./bot-session.js";
@@ -362,7 +363,9 @@ const sentencesFromEnv = (): SessionBotDeps["sentences"] => {
   const secret = process.env.BOT_KEY_SECRET;
   if (!secret) { warnOnce("sentences", "ANTHROPIC_API_KEY is set but BOT_KEY_SECRET is not: the sentence desk needs it to hash sentences, so it is off"); return undefined; }
   const limits = sentenceLimitsFromEnv();
-  const translator = createAnthropicTranslator({ apiKey, model: process.env.BOT_SENTENCE_MODEL?.trim() || "claude-haiku-5-5", fetch: (input, init) => fetch(input, init) });
+  const model = process.env.BOT_SENTENCE_MODEL?.trim() || "claude-haiku-5-5";
+  if (rejectsForcedTool(model)) refuse(`BOT_SENTENCE_MODEL ${model} rejects the forced propose_orders call; use claude-haiku-5-5`);
+  const translator = createAnthropicTranslator({ apiKey, model, fetch: (input, init) => fetch(input, init) });
   const url = process.env.DATABASE_URL;
   if (url) {
     const sql = neon(url);
