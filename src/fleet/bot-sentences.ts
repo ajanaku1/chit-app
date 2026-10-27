@@ -12,7 +12,7 @@
 import type { Address } from "viem";
 import type { BotLinkStore } from "./bot-link.js";
 import { CEILING, SHIELD_ON, btn, buildBuy, buildExit, buildShield, eth, fmt, kb, orderLine, toUnits, type Built, type OrderBuildDeps, type Refusal, type Retry } from "./bot-order-build.js";
-import { MAX_OPEN_ORDERS, type Order } from "./bot-orders.js";
+import { MAX_OPEN_ORDERS, type Order, type OrderStore } from "./bot-orders.js";
 import type { PositionLedger } from "./bot-positions.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { sessionState } from "./session-keys.js";
@@ -59,6 +59,8 @@ export const LINES = {
   waits: "will wait until you resume.",
   clamped: "size clamped to 100%",
   noCap: "your session allows no ETH a trade, so there is nothing to buy with. raise it on the Sessions page.",
+  spent: "your session's total is used up, so there is nothing to buy with. grant a new one on the Sessions page.",
+  partial: "something broke while placing, so some of these may not be set. check 📋 Orders.",
 } as const;
 
 /** A token the account has traded, read at card time: the chain balance decides whether it is held (FR-012b). */
@@ -122,7 +124,7 @@ const buyOf = (p: Proposal, c: Candidate): StoredProposal | string => {
     const at = toUnits(l.eth, 18);
     return at ? { kind: "limit", ethWei: ethWei.toString(), levelPerEth: (10n ** BigInt(18 + c.decimals) / at).toString() } : LINES.unread;
   }
-  const move = l ? ("percent" in l ? Math.abs(l.percent) : (1 - l.multiple) * 100) : undefined;
+  const move = l ? ("percent" in l ? -l.percent : (1 - l.multiple) * 100) : undefined;
   if (move === undefined || move < 1 || move > 95) return LINES.unread;
   const moveBps = Math.round(move * 100);
   return { kind: "limit", ethWei: ethWei.toString(), moveBps, levelPerEth: ((c.perEth * B) / (B - BigInt(moveBps))).toString() };
@@ -176,6 +178,14 @@ const reprice = (p: StoredProposal, perEth: bigint): StoredProposal => {
 };
 
 /** Paused, the orders are taken and wait (FR-016): the session's answer for this trade is not asked; every other check is. */
+/** The order store with one open order left out of the count, the one Replace closes, so the ceiling sees the place it frees. */
+const without = (s: OrderStore, id: string): OrderStore => new Proxy(s, {
+  get: (t, k) => {
+    if (k === "openFor") return async (tgId: string, chainId: number) => (await t.openFor(tgId, chainId)).filter((o) => o.id !== id);
+    const v: unknown = Reflect.get(t, k);
+    return typeof v === "function" ? v.bind(t) : v;
+  },
+});
 const waiting = (s: SessionChain): SessionChain => ({ ...s, canExecute: async () => ({ ok: true, why: "" }), canSell: async () => ({ ok: true, why: "" }) });
 
 /** A message the desk sent, said again in place; no buttons unless given. A message that was never sent is left alone. */
@@ -192,7 +202,8 @@ export const sweepCards = async (store: SentenceStore, telegram: Telegram, now: 
   return stale.length;
 };
 
-type Gate = { paused: boolean; capWei: bigint };
+/** A spent session buys nothing but still sells, as the buttons do. */
+type Gate = { paused: boolean; capWei: bigint; spent?: true };
 
 export class SentenceDesk {
   readonly #d: SentenceDeskDeps;
@@ -231,6 +242,7 @@ export class SentenceDesk {
   async #gate(account: Address): Promise<Gate | undefined> {
     const view = await this.#d.build.session.sessionOf(account);
     const state = sessionState(view, Math.floor(this.#now.getTime() / 1000));
+    if (state === "spent") return { paused: false, capWei: 0n, spent: true };
     return state === "active" || state === "paused" ? { paused: state === "paused", capWei: BigInt(view.maxValuePerCall) } : undefined;
   }
 
@@ -246,8 +258,11 @@ export class SentenceDesk {
   /** One question with buttons (FR-007), the draft kept for ten minutes against the tap. */
   async #ask(chatId: string, tgId: string, hash: string, draft: Draft, ask: Ask): Promise<void> {
     const partial = { missing: ask.missing, draft: draft.proposals, choices: ask.choices, labels: ask.labels, ...(draft.pinned ? { pinned: draft.pinned } : {}) };
-    await this.#d.store.setPending({ chatId, tgId, sentenceHash: hash, partial, leaseUntil: new Date(this.#now.getTime() + LEASE_MS).toISOString() });
-    await this.#say(chatId, ask.text, kb(...ask.labels.map((label, i) => [btn(label, `sq:${chatId}:${i}`)]), [btn("Cancel", `sq:${chatId}:x`)]));
+    const q = { chatId, tgId, sentenceHash: hash, partial, leaseUntil: new Date(this.#now.getTime() + LEASE_MS).toISOString() };
+    await this.#d.store.setPending(q);
+    const messageId = await this.#say(chatId, ask.text, kb(...ask.labels.map((label, i) => [btn(label, `sq:${chatId}:${i}`)]), [btn("Cancel", `sq:${chatId}:x`)]));
+    // Tied to its message, so an older question's buttons, still on screen, answer nothing.
+    if (messageId !== undefined) await this.#d.store.setPending({ ...q, partial: { ...partial, messageId } });
   }
 
   /**
@@ -304,6 +319,7 @@ export class SentenceDesk {
       const named = matchToken(p.tokenText, pool), hits = pool.filter((c) => named.includes(c.address));
       if (hits.length > 1) return hits;
       if (hits.length === 0 && sell && p.tokenText.trim()) return `you hold no ${esc(p.tokenText.replace(/^\$/, "").toUpperCase())} in this account.`;
+      if (hits.length === 0 && p.tokenText.trim()) return `you have not traded ${esc(p.tokenText.replace(/^\$/, "").toUpperCase())} through the bot. paste its address to open its card.`;
       if (hits.length === 0) return held.length ? held : LINES.unread;
       found.add(hits[0]!);
     }
@@ -343,14 +359,16 @@ export class SentenceDesk {
     const open = await this.#d.build.orders.openFor(tgId, this.#d.build.session.chainId);
     const here = open.filter((o) => o.token.toLowerCase() === c.address);
     if (stored.some((p) => p.kind === "shield") && here.some((o) => o.kind === "shield")) return SHIELD_ON;
-    if (open.length + stored.length > MAX_OPEN_ORDERS) return CEILING;
+    const kinds = new Set(stored.map((p) => p.kind));
+    const existing = here.find((o) => o.kind !== "shield" && kinds.has(o.kind));
+    // Replace closes the named order, so it frees a place; Add is counted again at Confirm.
+    if (open.length + stored.length - (existing ? 1 : 0) > MAX_OPEN_ORDERS) return CEILING;
     const buys = stored.some((p) => p.kind === "limit" || p.kind === "dca");
-    if (buys && gate.capWei === 0n) return LINES.noCap;
+    if (buys && gate.capWei === 0n) return gate.spent ? LINES.spent : LINES.noCap;
     const proposals = stored.map((p): StoredProposal => {
       if (p.ethWei === undefined || BigInt(p.ethWei) <= gate.capWei) return p;
       return { ...p, ethWei: gate.capWei.toString(), note: `your session allows ${eth(gate.capWei)} ETH a trade, so ${eth(gate.capWei)} ETH` };
     });
-    const existing = here.find((o) => o.kind !== "shield" && proposals.some((p) => p.kind === o.kind));
     return existing ? { proposals, existing } : { proposals };
   }
 
@@ -375,8 +393,8 @@ export class SentenceDesk {
     const [, chatKey, pick = ""] = data.split(":");
     if (chatKey !== chatId) return LINES.questionGone;
     const edit = (text: string) => editIn(this.#d.telegram, chatId, messageId, text);
-    if (pick === "x") { await this.#d.store.dropPending(chatId); await edit(LINES.cancelled); return undefined; }
-    const got = await this.#d.store.consumePending(chatId, this.#now);
+    if (pick === "x") { await this.#d.store.dropPending(chatId, messageId); await edit(LINES.cancelled); return undefined; }
+    const got = await this.#d.store.consumePending(chatId, this.#now, messageId);
     if (!got || "expired" in got || got.question.tgId !== tgId) return LINES.questionGone;
     const { partial, sentenceHash } = got.question;
     const choice = partial.choices[Number(pick)];
@@ -420,14 +438,21 @@ export class SentenceDesk {
     const existing = card.existingOrderId ? (await this.#d.build.orders.openFor(card.tgId, this.#d.build.session.chainId)).find((o) => o.id === card.existingOrderId) : undefined;
     const drift = c.perEth > card.perEthAtCard ? c.perEth - card.perEthAtCard : card.perEthAtCard - c.perEth;
     if (drift * B > MOVED_BPS * card.perEthAtCard) return this.#moved(card, c, gate, existing);
-    const built = await this.#buildAll(card, link.account, c.decimals, gate);
+    const built = await this.#buildAll(card, link.account, c.decimals, gate, replace ? existing?.id : undefined);
     if (!Array.isArray(built)) { await this.#say(card.chatId, built.reason, built.buttons); return undefined; }
     // Each build counted the open orders on its own, so orders set since the card could pass the ceiling together.
     const open = (await this.#d.build.orders.openFor(card.tgId, this.#d.build.session.chainId)).length - (replace && existing ? 1 : 0);
     if (open + built.length > MAX_OPEN_ORDERS) { await this.#say(card.chatId, CEILING, kb([btn("📋 Orders", "orders")])); return undefined; }
     if (!(await this.#d.store.transition(card.id, "placed", this.#now))) return this.#byState(card.id);
-    if (replace && card.existingOrderId) await this.#d.build.orders.cancel(card.existingOrderId);
-    for (const order of built) await this.#d.build.orders.put(order);
+    // The new orders go in before the old one is closed, so a failure part way leaves an extra order, never a lost one.
+    try {
+      for (const order of built) await this.#d.build.orders.put(order);
+      if (replace && card.existingOrderId) await this.#d.build.orders.cancel(card.existingOrderId);
+    } catch (e) {
+      console.warn(`desk: ${JSON.stringify({ hash: card.sentenceHash.slice(0, 16), class: "place", error: String(e).slice(0, 120) })}`);
+      await this.#edit(card, LINES.partial, kb([btn("📋 Orders", "orders")]));
+      return undefined;
+    }
     await this.#d.store.addEval({ sentenceHash: card.sentenceHash, context: { held: [{ symbol: c.symbol, tail: tail(card.token) }], perEth: { [tail(card.token)]: card.perEthAtCard.toString() } }, accepted: card.proposals, at: this.#now.toISOString() });
     await this.#edit(card, cardText(card, c, false, this.#tail(LINES.placed, gate)));
     return undefined;
@@ -448,9 +473,10 @@ export class SentenceDesk {
   }
 
   /** Each proposal through the shared preflight, levels as fixed on the card (FR-014); the first refusal stops it. */
-  async #buildAll(card: SentenceCard, account: Address, decimals: number, gate: Gate): Promise<Order[] | Refusal> {
+  async #buildAll(card: SentenceCard, account: Address, decimals: number, gate: Gate, replacing?: string): Promise<Order[] | Refusal> {
     const who = { tgId: card.tgId, account, token: card.token as Address };
-    const build = gate.paused ? { ...this.#d.build, session: waiting(this.#d.build.session) } : this.#d.build;
+    const base = gate.paused ? { ...this.#d.build, session: waiting(this.#d.build.session) } : this.#d.build;
+    const build = replacing ? { ...base, orders: without(base.orders, replacing) } : base;
     const orders: Order[] = [];
     for (const p of card.proposals) {
       const ethWei = BigInt(p.ethWei ?? "0");

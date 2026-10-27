@@ -459,3 +459,79 @@ test("US4 scenario 5: a confirmed card keeps the hash, the held context and the 
   const everything = JSON.stringify({ cards: [...store.cards.values()], pending: [...store.pending.values()], evals: store.evals, counts: [...store.counts] }, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
   assert.ok(!everything.includes("half my pepe"), "the sentence's words are nowhere at rest");
 });
+
+// Review of #168, 2026-10-27: one test per finding fixed.
+const withMap = (extra: Record<string, TranslationResult>) => setup({ translator: new FakeTranslator({ ...MAP, ...extra }) });
+const fill = async (orders: MemoryOrderStore, n: number) => { for (let i = 0; i < n; i++) await orders.put({ id: newOrderId(), tgId: "7", account: ACCOUNT, chainId: 4663, token: WIF, kind: "limit", ethWei: 1n, triggerPerEth: 1n, createdAt: clock.toISOString(), status: "open", refusals: 0 }); };
+
+test("review: an older question's buttons answer nothing; the question on screen now still takes its tap", async () => {
+  const { desk, telegram } = await setup();
+  await desk.handleText("7", "7", S.at50);
+  const first = telegram.sent.length;
+  await desk.handleText("7", "7", S.some);
+  const second = telegram.sent.length;
+  assert.equal(await desk.handleCallback("7", "7", "sq:7:1", first), LINES.questionGone, "the 50% question's stop loss does not size the buy");
+  assert.equal(await desk.handleCallback("7", "7", "sq:7:x", first), undefined);
+  assert.equal(await desk.handleCallback("7", "7", "sq:7:1", second), undefined, "Cancel on the old message dropped nothing");
+  assert.equal(lastSent(telegram).text, LINES.unread, "the size question was answered");
+});
+
+test("review: a direction asked from a multiple places either answer, the level signed by the tap", async () => {
+  const half = "pepe at half";
+  const draft: Proposal[] = [{ kind: "tp", tokenText: "pepe", level: { multiple: 0.5 } }];
+  for (const [i, line] of [[0, /🎯 take profit.* · <code>\+50%<\/code>/], [1, /stop loss.* · <code>-50%<\/code>/]] as const) {
+    const { desk, telegram } = await withMap({ [half]: { kind: "question", missing: "direction", draft } });
+    await desk.handleText("7", "7", half);
+    assert.deepEqual(labels(telegram), ["take profit at +50%", "stop loss at −50%", "Cancel"]);
+    await desk.handleCallback("7", "7", `sq:7:${i}`);
+    assert.match(lastSent(telegram).text, line);
+  }
+});
+
+test("review: Replace that fails part way keeps the old order and says to check Orders", async () => {
+  const { desk, telegram, orders, build } = await setup();
+  const old = await putExit(build, orders, "tp", 50);
+  await desk.handleText("7", "7", S.tp3x);
+  orders.put = async () => { throw new Error("quota"); };
+  assert.equal(await desk.handleCallback("7", "7", `sc:${cardId(telegram)}:rep`), undefined);
+  assert.deepEqual((await open(orders)).map((o) => o.id), [old.id], "the take profit it would replace is still open");
+  assert.equal(lastSent(telegram).text, LINES.partial);
+});
+
+test("review: a spent session still takes a stop loss from a sentence; a buy says the total is used up", async () => {
+  const { desk, telegram, orders, st, connects } = await setup();
+  st.spentValue = st.totalValueCap;
+  await desk.handleText("7", "7", S.sl20);
+  await desk.handleCallback("7", "7", `sc:${cardId(telegram)}:ok`);
+  assert.deepEqual((await open(orders)).map((o) => o.kind), ["sl"]);
+  await desk.handleText("7", "7", S.dip);
+  assert.equal(lastSent(telegram).text, LINES.spent);
+  assert.deepEqual(connects, [], "no Connect prompt");
+});
+
+test("review: a buy naming a token not traded here asks for its address, never offers the held ones", async () => {
+  const { desk, telegram } = await withMap({ "buy 0.01 eth of doge": { kind: "orders", proposals: [{ kind: "limit", tokenText: "doge", size: { eth: "0.01" }, level: { percent: -10 } }] } });
+  await desk.handleText("7", "7", "buy 0.01 eth of doge");
+  assert.equal(lastSent(telegram).text, "you have not traded DOGE through the bot. paste its address to open its card.");
+});
+
+test("review: a limit percent above the price is not read as one below it", async () => {
+  const { desk, telegram } = await withMap({ "buy pepe 20% up": { kind: "orders", proposals: [{ kind: "limit", tokenText: "pepe", size: { eth: "0.01" }, level: { percent: 20 } }] } });
+  await desk.handleText("7", "7", "buy pepe 20% up");
+  assert.equal(lastSent(telegram).text, LINES.unread);
+});
+
+test("review: at the ceiling, Replace frees the place it closes, at the card and at Confirm", async () => {
+  const { desk, telegram, orders, build } = await setup();
+  const old = await putExit(build, orders, "tp", 50);
+  await fill(orders, MAX_OPEN_ORDERS - 1);
+  await desk.handleText("7", "7", S.tp3x);
+  assert.deepEqual(labels(telegram), ["Replace", "Add both", "Cancel"]);
+  const id = cardId(telegram);
+  assert.equal(await desk.handleCallback("7", "7", `sc:${id}:add`), undefined);
+  assert.equal(lastSent(telegram).text, CEILING, "Add both would be eleven");
+  await desk.handleCallback("7", "7", `sc:${id}:rep`);
+  const now = await open(orders);
+  assert.equal(now.length, MAX_OPEN_ORDERS);
+  assert.ok(!now.some((o) => o.id === old.id) && now.some((o) => o.kind === "tp"), "the old take profit closed, the new one open");
+});

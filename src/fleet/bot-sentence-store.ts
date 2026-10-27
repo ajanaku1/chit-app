@@ -18,7 +18,7 @@ export type SentenceCard = {
   perEthAtCard: bigint; proposals: StoredProposal[]; existingOrderId?: string; createdAt: string; resolvedAt?: string;
 };
 export type NewCard = Omit<SentenceCard, "id" | "state" | "messageId" | "resolvedAt">;
-export type PendingQuestion = { chatId: string; tgId: string; sentenceHash: string; partial: { missing: "token" | "size" | "direction" | "interval"; draft: unknown[]; choices: string[]; labels?: string[]; pinned?: string }; leaseUntil: string };
+export type PendingQuestion = { chatId: string; tgId: string; sentenceHash: string; partial: { missing: "token" | "size" | "direction" | "interval"; draft: unknown[]; choices: string[]; labels?: string[]; pinned?: string; messageId?: number }; leaseUntil: string };
 export type EvalRecord = { sentenceHash: string; context: { held: { symbol: string; tail: string }[]; perEth: Record<string, string> }; accepted: StoredProposal[]; at: string };
 
 export interface SentenceStore {
@@ -38,9 +38,12 @@ export interface SentenceStore {
   /** The chat's Proposed card, if any, becomes `expired` (a new sentence arrived); how many. */
   expireChat(chatId: string, at: Date): Promise<number>;
   setPending(q: PendingQuestion): Promise<void>;
-  /** The question, removed, when one is waiting and its lease holds; an expired one is removed and reported as such. */
-  consumePending(chatId: string, now: Date): Promise<{ question: PendingQuestion } | { expired: true } | undefined>;
-  dropPending(chatId: string): Promise<void>;
+  /**
+   * The question, removed, when one is waiting and its lease holds; an expired one is removed and reported as such. Given
+   * the tapped message, a question sent as another message is left alone: an older question's buttons answer nothing.
+   */
+  consumePending(chatId: string, now: Date, messageId?: number): Promise<{ question: PendingQuestion } | { expired: true } | undefined>;
+  dropPending(chatId: string, messageId?: number): Promise<void>;
   /** One more sentence today for this trader, unless that would pass `limit`; the count after. */
   bump(tgId: string, day: string, limit: number): Promise<{ ok: boolean; n: number }>;
   /** Gives one back: a translation that failed counts against no one's day (FR-021). Never below zero. */
@@ -96,13 +99,13 @@ export class MemorySentenceStore implements SentenceStore {
   }
   async expireChat(chatId: string, at: Date) { return this.#expire((c) => c.chatId === chatId, at); }
   async setPending(q: PendingQuestion) { this.pending.set(q.chatId, q); }
-  async consumePending(chatId: string, now: Date) {
+  async consumePending(chatId: string, now: Date, messageId?: number) {
     const q = this.pending.get(chatId);
-    if (!q) return undefined;
+    if (!q || !sameMessage(q, messageId)) return undefined;
     this.pending.delete(chatId);
     return Date.parse(q.leaseUntil) > now.getTime() ? { question: q } : { expired: true as const };
   }
-  async dropPending(chatId: string) { this.pending.delete(chatId); }
+  async dropPending(chatId: string, messageId?: number) { if (sameMessage(this.pending.get(chatId), messageId)) this.pending.delete(chatId); }
   async bump(tgId: string, day: string, limit: number) {
     const key = `${tgId}:${day}`, n = this.counts.get(key) ?? 0;
     if (n >= limit) return { ok: false, n };
@@ -138,6 +141,11 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bot_sentence_spend (day DATE PRIMARY KEY, usd_micros BIGINT NOT NULL, calls INTEGER NOT NULL, alerted_at TIMESTAMPTZ)`,
   `CREATE TABLE IF NOT EXISTS bot_sentence_evals (id BIGSERIAL PRIMARY KEY, sentence_hash TEXT NOT NULL, context JSONB NOT NULL, accepted JSONB NOT NULL, at TIMESTAMPTZ NOT NULL)`,
 ];
+
+/** No tapped message, or a question not yet tied to one, matches; else the ids must agree. */
+const sameMessage = (q: PendingQuestion | undefined, messageId: number | undefined): boolean =>
+  messageId === undefined || q?.partial.messageId === undefined || q.partial.messageId === messageId;
+const SAME_MESSAGE = `($2::bigint IS NULL OR partial->>'messageId' IS NULL OR (partial->>'messageId')::bigint = $2)`;
 
 const iso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
 const rowCard = (r: Record<string, unknown>): SentenceCard => ({
@@ -184,13 +192,13 @@ export class NeonSentenceStore implements SentenceStore {
     await this.#q(`INSERT INTO bot_sentence_pending (chat_id, tg_id, sentence_hash, partial, lease_until) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (chat_id) DO UPDATE SET tg_id = EXCLUDED.tg_id, sentence_hash = EXCLUDED.sentence_hash, partial = EXCLUDED.partial, lease_until = EXCLUDED.lease_until`,
       [q.chatId, q.tgId, q.sentenceHash, JSON.stringify(q.partial), q.leaseUntil]);
   }
-  async consumePending(chatId: string, now: Date) {
-    const [r] = await this.#q(`DELETE FROM bot_sentence_pending WHERE chat_id = $1 RETURNING *`, [chatId]);
+  async consumePending(chatId: string, now: Date, messageId?: number) {
+    const [r] = await this.#q(`DELETE FROM bot_sentence_pending WHERE chat_id = $1 AND ${SAME_MESSAGE} RETURNING *`, [chatId, messageId ?? null]);
     if (!r) return undefined;
     const q = rowPending(r);
     return Date.parse(q.leaseUntil) > now.getTime() ? { question: q } : { expired: true as const };
   }
-  async dropPending(chatId: string) { await this.#q(`DELETE FROM bot_sentence_pending WHERE chat_id = $1`, [chatId]); }
+  async dropPending(chatId: string, messageId?: number) { await this.#q(`DELETE FROM bot_sentence_pending WHERE chat_id = $1 AND ${SAME_MESSAGE}`, [chatId, messageId ?? null]); }
   async bump(tgId: string, day: string, limit: number) {
     const [r] = await this.#q(`INSERT INTO bot_sentence_counts (tg_id, day, n) VALUES ($1, $2, 1) ON CONFLICT (tg_id, day) DO UPDATE SET n = bot_sentence_counts.n + 1 WHERE bot_sentence_counts.n < $3 RETURNING n`, [tgId, day, limit]);
     if (r) return { ok: true, n: Number(r.n) };

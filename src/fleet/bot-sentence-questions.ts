@@ -55,11 +55,19 @@ export const intervalAsk = (): Ask => ({ missing: "interval", text: "how often?"
 /** A sell share left unsaid after the direction answer is all of it, said on the card (IMPLEMENTATION.md, 2026-10-22). */
 export const ALL_OF_IT = "no share was given, so all of it. Cancel and say a share to sell less.";
 
+/** The move the direction question offered, as a percent signed by the answer: a multiple of 2 is +100% or -100% alike. */
+const signed = (p: Proposal, up: boolean): Pick<Proposal, "level"> => {
+  const l = p.level;
+  if (!l || !("multiple" in l || "percent" in l)) return {};
+  const n = "percent" in l ? Math.abs(l.percent) : Math.round(Math.abs(l.multiple - 1) * 100);
+  return { level: { percent: up ? n : -n } };
+};
+
 /** The draft with the tapped answer in it. */
 export const apply = (draft: Draft, missing: Missing, choice: string): Draft => {
   if (missing === "token") return { ...draft, pinned: choice };
   const proposals = draft.proposals.map((p): Proposal => {
-    if (missing === "direction") return isExit(p) ? { ...p, kind: choice as "tp" | "sl", ...(p.size ? {} : { size: { pct: 100 }, note: ALL_OF_IT }) } : p;
+    if (missing === "direction") return isExit(p) ? { ...p, kind: choice as "tp" | "sl", ...signed(p, choice === "tp"), ...(p.size ? {} : { size: { pct: 100 }, note: ALL_OF_IT }) } : p;
     if (missing === "interval") return p.kind === "dca" && !p.every ? { ...p, every: choice as (typeof EVERY)[number] } : p;
     const [unit, value = ""] = choice.split(":");
     if (unit === "pct" && isExit(p) && !p.size) return { ...p, size: { pct: Number(value) } };
