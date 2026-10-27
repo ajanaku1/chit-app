@@ -55,7 +55,11 @@ import type { CopyDesk } from "./bot-copy.js";
 import { CopyCards } from "./bot-copy-cards.js";
 import { heyLine, type HeyScanner } from "./bot-hey.js";
 import { issueNonce, type BotLinkStore } from "./bot-link.js";
-import { MAX_OPEN_ORDERS, SHIELD_SLIPPAGE_BPS, newOrderId, type Order, type OrderStore } from "./bot-orders.js";
+import { SentenceDesk, type SentenceLimits } from "./bot-sentences.js";
+import type { SentenceStore } from "./bot-sentence-store.js";
+import type { Translator } from "./bot-sentence-translate.js";
+import { buildBuy, buildExit, buildShield, btn, eth, fmt, kb, orderLine, permit2FixedCard, permit2FixedSale, toUnits, url, type OrderBuildDeps, type Retry } from "./bot-order-build.js";
+import type { Order, OrderStore } from "./bot-orders.js";
 import { orusLine, type OrusScanner } from "./bot-orus.js";
 import type { SessionChain } from "./bot-session-chain.js";
 import { CAPTION_MAX_CHARS, esc, type Keyboard, type Outgoing, type Telegram } from "./bot-telegram.js";
@@ -101,6 +105,8 @@ export type SessionBotDeps = {
   shields?: boolean;
   /** Big-buy alerts (bot-alerts.ts): the user's line, read by the watcher's cron; absent, no 🔔 Alerts button. */
   alerts?: AlertStore;
+  /** The sentence desk (bot-sentences.ts): plain DM text becomes a Proposed card; needs orders and positions too. Absent, free text gets the hint. */
+  sentences?: { translator: Translator; store: SentenceStore; secret: string; limits?: Partial<SentenceLimits> };
   botUsername: string;
   siteUrl: string;
   /** Per user, per UTC day: how many executes and how much gas the bot fronts. */
@@ -169,25 +175,17 @@ const SELL_GAS_WEI = sellGasWei();
 export const MIRRORS_UNTIL_MS = 50_000;
 /** What a tap is told while the same person's last buy or sell is still going (2026-10-06: Sell 50% tapped five times sold five times). */
 const BUSY = "still working on your last trade. wait for its answer.";
+/** FR-025: said on the about text and the privacy page (app/fleet-privacy.html), on no card. */
+export const SENTENCE_DISCLOSURE = "a sentence you type is read once by an outside AI service to write the card; the words are not kept.";
 /** How long Positions waits for ETH's dollar price before showing ETH alone. */
 const USD_WAIT_MS = 3_000;
 const USD_PEEK_MS = 300;
 const short = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
-const fmt = (units: bigint, decimals = 18, places = 5): string => {
-  const neg = units < 0n; const u = neg ? -units : units;
-  const base = 10n ** BigInt(decimals); const whole = u / base; const frac = u % base;
-  const f = frac.toString().padStart(decimals, "0").slice(0, places).replace(/0+$/, "");
-  return `${neg ? "-" : ""}${whole.toString()}${f ? "." + f : ""}`;
-};
-const eth = (wei: bigint, places = 5): string => fmt(wei, 18, places);
 const toWei = (s: string): bigint | null => {
   if (!/^\d+(\.\d{1,18})?$/.test(s)) return null;
   const [w = "0", f = ""] = s.split(".");
   return BigInt(w) * 10n ** 18n + BigInt((f + "0".repeat(18)).slice(0, 18));
 };
-const kb = (...rows: Keyboard): Keyboard => rows;
-const btn = (text: string, data: string) => ({ text, callback_data: data });
-const url = (text: string, href: string) => ({ text, url: href });
 
 /** One user's executes today, in this instance: enough to stop a loop; the chain-side caps are the real bound. */
 type DayCount = { day: string; executes: number; gasWei: bigint };
@@ -204,6 +202,7 @@ export class SessionBot {
   readonly #alerts: AlertCards | undefined;
   readonly #updates: UpdateClaims;
   readonly #locks: TradeLocks;
+  readonly #sentences: SentenceDesk | undefined;
 
   constructor(d: SessionBotDeps) {
     this.#d = d;
@@ -213,6 +212,10 @@ export class SessionBot {
     this.#copy = d.copy ? new CopyCards({ copy: d.copy, telegram: d.telegram, siteUrl: d.siteUrl, budget: async (tgId) => this.#charge(tgId) ?? d.copy!.chargeDay(tgId), ...(d.orus ? { orus: d.orus } : {}), ...(d.hey ? { hey: d.hey } : {}) }) : undefined;
     // alerts: the card writes the subscription; the watcher's cron sends the alerts (bot-alert-cards.ts).
     this.#alerts = d.alerts ? new AlertCards({ store: d.alerts, telegram: d.telegram }) : undefined;
+    // sentences: the desk places through the same preflight as the buttons (this.#build) and answers non-instructions with the same hint.
+    this.#sentences = d.sentences && d.orders && d.positions
+      ? new SentenceDesk({ ...d.sentences, telegram: d.telegram, links: d.links, positions: d.positions, build: this.#build(d.orders), hint: (chatId) => this.#help(chatId), connect: (chatId, tgId) => this.#connect(chatId, tgId) })
+      : undefined;
   }
 
   get #now(): Date { return this.#d.now ? this.#d.now() : new Date(); }
@@ -271,6 +274,8 @@ export class SessionBot {
       }
       const pasted = text.match(/0x[0-9a-fA-F]{40}/)?.[0];
       if (pasted) return this.#tokenCard(chatId, tgId, pasted.toLowerCase() as Address);
+      // sentences: anything left that is not a command is a sentence (FR-001); group chats returned above (FR-017).
+      if (this.#sentences && !text.startsWith("/")) return this.#sentences.handleText(chatId, tgId, text);
       return this.#help(chatId);
     }
     const q = u.callback_query;
@@ -285,6 +290,8 @@ export class SessionBot {
     if (this.#copy?.owns(verb ?? "")) { await ack(); return this.#copy.callback(chatId, tgId, verb!, a, q.from); }
     // alerts: the card, on, off and the line prompt (bot-alert-cards.ts).
     if (this.#alerts?.owns(verb ?? "")) { await ack(); return this.#alerts.callback(chatId, tgId, verb!, a); }
+    // sentences: Confirm and Cancel on a card, answers to its question (contracts/callbacks.md); the toast is the desk's.
+    if (this.#sentences && (data.startsWith("sc:") || data.startsWith("sq:"))) { await ack(await this.#sentences.handleCallback(chatId, tgId, data, messageId)); return; }
     switch (verb) {
       case "home": await ack(); return this.#home(chatId, tgId, messageId);
       // A tap that lands while the last read is still going is answered and dropped: one read per person, and no pile of them on the RPC.
@@ -553,6 +560,8 @@ export class SessionBot {
       "the key stays with you. link a session account once, then paste any token's address and buy from your account in one tap.",
       "sell from the token card too, once you turn on let it sell next to the bot's key on the Sessions page. a sale is one call on your account: the ETH lands in your account, nothing stays approved after it, and turning let it sell off is complete. the pool and the floor are the key's, so the flag trusts the bot's key with the position, not only the caps. withdrawals and fleets are yours to do from the app in this beta.",
       "/link to connect or re-link. /start for your card." + (this.#d.comp ? " /competition for how to enter the trading competition, /board for the standings, /bug to report what broke." : ""),
+      // sentences: the disclosure the spec puts on the about text and the privacy page, never on a card (FR-025).
+      ...(this.#sentences ? [`or type what you want, like "sell half my pepe at 2x", and confirm the card. ${SENTENCE_DISCLOSURE}`] : []),
     ].join("\n"), kb([btn("← Back", "home")]));
   }
 
@@ -707,114 +716,53 @@ export class SessionBot {
     if (!orders || !link) return this.#home(chatId, tgId);
     if (kind === "tp" || kind === "sl") return this.#placeExit(chatId, tgId, link.account, token, kind, text);
     const again = kind === "limit" ? "tap ⏱ Limit buy again to retry." : "tap 🔁 DCA again to retry.";
-    const retry = kb([btn(kind === "limit" ? "⏱ Limit buy" : "🔁 DCA", `${kind === "limit" ? "lim" : "dca"}:${token}`), btn("← Back", `token:${token}`)]);
+    const retry: Retry = { again, buttons: kb([btn(kind === "limit" ? "⏱ Limit buy" : "🔁 DCA", `${kind === "limit" ? "lim" : "dca"}:${token}`), btn("← Back", `token:${token}`)]) };
     const t = text.trim().toLowerCase();
     const limit = kind === "limit" ? t.match(/^(\d+(?:\.\d+)?)\s+at\s+(\d+(?:\.\d+)?)$/) : null;
     const dca = kind === "dca" ? t.match(/^(\d+(?:\.\d+)?)\s+every\s+(\d+)\s+hours?\s+(\d+)\s+times?$/) : null;
-    if (!limit && !dca) return this.#say(chatId, `${kind === "limit" ? "that is not the format. amount in eth, then the price as tokens per eth, like <code>0.02 at 1200000</code>." : "that is not the format. amount, every N hours, N times, like <code>0.01 every 4 hours 6 times</code>."} ${again}`, retry);
+    if (!limit && !dca) return this.#say(chatId, `${kind === "limit" ? "that is not the format. amount in eth, then the price as tokens per eth, like <code>0.02 at 1200000</code>." : "that is not the format. amount, every N hours, N times, like <code>0.01 every 4 hours 6 times</code>."} ${again}`, retry.buttons);
     const wei = toWei((limit ?? dca)![1]!);
-    if (wei === null || wei <= 0n) return this.#say(chatId, `the amount must be a number of ETH above zero, like 0.02. ${again}`, retry);
-    if ((await orders.openFor(tgId, this.#d.session.chainId)).length >= MAX_OPEN_ORDERS) return this.#say(chatId, `that is ${MAX_OPEN_ORDERS} open orders, the most one account keeps in the beta; cancel one from 📋 Orders to set another.`, kb([btn("📋 Orders", "orders"), btn("← Back", `token:${token}`)]));
-    const info = await this.#d.reads.tokenInfo(token);
-    if (!info.hasPool) return this.#say(chatId, "no ETH pool on the venue for this token, so nothing to order.", kb([btn("← Back", "home")]));
-    const can = await this.#d.session.canExecute(link.account, this.#d.reads.router, UNIVERSAL_ROUTER_EXECUTE_SELECTOR, wei);
-    if (!can.ok) return this.#say(chatId, `your session says no to a buy of that size: <b>${esc(can.why)}</b>. manage it on the Sessions page, then set the order.`, kb([url("🔑 Sessions page", `${this.#d.siteUrl}/app/sessions`), btn("← Back", `token:${token}`)]));
-    const now = this.#now.toISOString();
-    const base = { id: newOrderId(), tgId, account: link.account, chainId: this.#d.session.chainId, token, ethWei: wei, createdAt: now, status: "open" as const, refusals: 0 };
-    let order: Order;
-    if (limit) {
-      const trigger = toUnits(limit[2]!, info.decimals);
-      if (trigger === null || trigger <= 0n) return this.#say(chatId, `the price must be a number of ${esc(info.symbol)} per ETH above zero, like 1200000. ${again}`, retry);
-      order = { ...base, kind: "limit", triggerPerEth: trigger };
-    } else {
-      const hours = Number(dca![2]), times = Number(dca![3]);
-      if (hours < 1 || hours > 720) return this.#say(chatId, `the interval must be between 1 and 720 hours. ${again}`, retry);
-      if (times < 1 || times > 100) return this.#say(chatId, `the count must be between 1 and 100 buys. ${again}`, retry);
-      order = { ...base, kind: "dca", everyMs: hours * 3_600_000, remaining: times, nextAt: now };
-    }
-    await orders.put(order);
-    await this.#say(chatId, `${this.#orderLine(order, info.symbol, info.decimals)}\nset. the bot checks every five minutes, asks your account first, and tells you here each time it buys or is refused. cancel from 📋 Orders.`, kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
+    if (wei === null) return this.#say(chatId, `the amount must be a number of ETH above zero, like 0.02. ${again}`, retry.buttons);
+    const who = { tgId, account: link.account, token, ethWei: wei };
+    const built = await buildBuy(this.#build(orders), limit ? { ...who, kind: "limit", perEth: limit[2]! } : { ...who, kind: "dca", hours: Number(dca![2]), times: Number(dca![3]) }, retry);
+    if (!built.ok) return this.#say(chatId, built.reason, built.buttons);
+    await orders.put(built.order);
+    await this.#say(chatId, `${built.line}\nset. the bot checks every five minutes, asks your account first, and tells you here each time it buys or is refused. cancel from 📋 Orders.`, kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
   }
 
-  /**
-   * A take profit or a stop loss: the level is said as a move from the price now (+50%, -20%) and stored as the tokens per
-   * ETH the pool shows at that price, the share as a percent of what the account holds when it fires. Everything a sale
-   * needs that the owner controls is checked before anything is stored: a position, the let it sell flag, a token the
-   * session can sell, and the contract's own answer for a sale of that share now, so an order that could never fire is
-   * refused here in words, not three times from the cron.
-   */
+  /** A take profit or a stop loss, parsed from the prompt's reply; the checks and the order are the shared preflight's (bot-order-build.ts). */
   async #placeExit(chatId: string, tgId: string, account: Address, token: Address, kind: "tp" | "sl", text: string): Promise<void> {
-    const orders = this.#d.orders!;
     const tp = kind === "tp";
     const again = tp ? "tap 🎯 Take profit again to retry." : "tap 🛑 Stop loss again to retry.";
-    const retry = kb([btn(tp ? "🎯 Take profit" : "🛑 Stop loss", `${kind}:${token}`), btn("← Back", `token:${token}`)]);
+    const retry: Retry = { again, buttons: kb([btn(tp ? "🎯 Take profit" : "🛑 Stop loss", `${kind}:${token}`), btn("← Back", `token:${token}`)]) };
     const m = text.trim().toLowerCase().match(/^([+-]?)\s*(\d+(?:\.\d+)?)\s*%?\s+(?:sell\s+)?(\d{1,3})\s*%?$/);
-    if (!m || m[1] === (tp ? "-" : "+")) return this.#say(chatId, `that is not the format. ${tp ? "how far up, then the share to sell, like <code>+50% sell 100%</code>" : "how far down, then the share to sell, like <code>-20% sell 100%</code>"}. ${again}`, retry);
+    if (!m || m[1] === (tp ? "-" : "+")) return this.#say(chatId, `that is not the format. ${tp ? "how far up, then the share to sell, like <code>+50% sell 100%</code>" : "how far down, then the share to sell, like <code>-20% sell 100%</code>"}. ${again}`, retry.buttons);
     const move = Number(m[2]), pct = Number(m[3]);
-    if (tp ? move < 1 || move > 10_000 : move < 1 || move > 95) return this.#say(chatId, `${tp ? "the move up must be between 1% and 10000%" : "the move down must be between 1% and 95%"}. ${again}`, retry);
-    if (!Number.isInteger(pct) || pct < 1 || pct > 100) return this.#say(chatId, `the share must be a whole percent of what you hold, 1 to 100. ${again}`, retry);
-    if ((await orders.openFor(tgId, this.#d.session.chainId)).length >= MAX_OPEN_ORDERS) return this.#say(chatId, `that is ${MAX_OPEN_ORDERS} open orders, the most one account keeps in the beta; cancel one from 📋 Orders to set another.`, kb([btn("📋 Orders", "orders"), btn("← Back", `token:${token}`)]));
-    const sessions = `${this.#d.siteUrl}/app/sessions`;
-    const [info, held] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, account)]);
-    if (!info.hasPool) return this.#say(chatId, "no ETH pool on the venue for this token, so nothing to order.", kb([btn("← Back", "home")]));
-    const amount = (held * BigInt(pct)) / 100n;
-    if (amount === 0n) return this.#say(chatId, `your account holds no ${esc(info.symbol)}, so there is nothing to protect yet. buy first, then set it from the card.`, kb([btn("← Back", `token:${token}`)]));
-    if (!(await this.#d.session.sellAllowed(account))) return this.#say(chatId, `a ${tp ? "take profit" : "stop loss"} sells from your account, and your session does not allow sells yet. on the Sessions page, next to the bot's key, turn on let it sell (one transaction), then set it again.`, kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
-    if (await this.#d.session.permit2Fixed?.(token, account).catch(() => false)) return this.#say(chatId, permit2FixedSale(info.symbol), kb([url("🔑 Withdraw token to my wallet", `${sessions}#wtoken-form`), btn("← Back", `token:${token}`)]));
-    const quote = await this.#d.reads.quoteSell(token, amount);
-    if (quote === null) return this.#say(chatId, "no ETH pool on the venue for this token.", kb([btn("← Back", "home")]));
-    const deadline = BigInt(Math.floor(this.#now.getTime() / 1000) + 3600);
-    const can = await this.#d.session.canSell(account, this.#d.reads.router, info.poolKey ?? venuePoolKey(token), amount, minOutFor(quote, this.#cfg("sellSlippageBps")), deadline);
-    if (!can.ok) return this.#say(chatId, `your session says no to a sale of that share: <b>${esc(can.why)}</b>. manage it on the Sessions page, then set the order.`, kb([url("🔑 Sessions page", sessions), btn("← Back", `token:${token}`)]));
-    // A price up by `move` percent is that much fewer tokens per ETH; down, that much more. In basis points, so 2.5% is exact.
-    const bps = BigInt(Math.round(move * 100));
-    const trigger = tp ? (info.perEth * 10_000n) / (10_000n + bps) : (info.perEth * 10_000n) / (10_000n - bps);
-    const order: Order = { id: newOrderId(), tgId, account, chainId: this.#d.session.chainId, token, kind, ethWei: 0n, triggerPerEth: trigger, sellPct: pct, createdAt: this.#now.toISOString(), status: "open", refusals: 0 };
-    await orders.put(order);
-    await this.#say(chatId, `${this.#orderLine(order, info.symbol, info.decimals)} (${tp ? "+" : "-"}${move}% from now)\nset. the bot checks every five minutes, asks your account first, and tells you here when it sells or is refused. it fires once, then closes. cancel from 📋 Orders.`, kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
+    const built = await buildExit(this.#build(this.#d.orders!), { tgId, account, token, kind, move, pct }, retry);
+    if (!built.ok) return this.#say(chatId, built.reason, built.buttons);
+    await this.#d.orders!.put(built.order);
+    await this.#say(chatId, `${built.line} (${tp ? "+" : "-"}${move}% from now)\nset. the bot checks every five minutes, asks your account first, and tells you here when it sells or is refused. it fires once, then closes. cancel from 📋 Orders.`, kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
   }
 
-  /**
-   * A rug shield on a held token: one tap, all of the position, no level. Everything a sale needs that the owner
-   * controls is checked first, as for a stop loss (a position, let it sell, a token the session can sell, the contract's
-   * answer for a sale of all of it at the shield's floor), so a shield that could never fire is refused now in words.
-   * One per token: a second tap says it is on and where to turn it off.
-   */
+  /** A rug shield on a held token: one tap, all of the position, no level; the checks are the shared preflight's. */
   async #placeShield(chatId: string, tgId: string, token: Address): Promise<void> {
     const orders = this.#d.orders!;
     const link = await this.#d.links.getLink(tgId);
     if (!link) return this.#home(chatId, tgId);
-    const back = btn("← Back", `token:${token}`);
-    const open = await orders.openFor(tgId, this.#d.session.chainId);
-    if (open.some((o) => o.kind === "shield" && o.token.toLowerCase() === token.toLowerCase())) return this.#say(chatId, "🛡 rug shield is already on for this token. turn it off from 📋 Orders.", kb([btn("📋 Orders", "orders"), back]));
-    if (open.length >= MAX_OPEN_ORDERS) return this.#say(chatId, `that is ${MAX_OPEN_ORDERS} open orders, the most one account keeps in the beta; cancel one from 📋 Orders to set another.`, kb([btn("📋 Orders", "orders"), back]));
-    const sessions = `${this.#d.siteUrl}/app/sessions`;
-    const [info, held] = await Promise.all([this.#d.reads.tokenInfo(token), this.#d.reads.tokenBalance(token, link.account)]);
-    if (!info.hasPool) return this.#say(chatId, "no ETH pool on the venue for this token, so nothing to shield.", kb([btn("← Back", "home")]));
-    if (held === 0n) return this.#say(chatId, `your account holds no ${esc(info.symbol)}, so there is nothing to shield yet.`, kb([back]));
-    if (!(await this.#d.session.sellAllowed(link.account))) return this.#say(chatId, "a rug shield sells from your account, and your session does not allow sells yet. on the Sessions page, next to the bot's key, turn on let it sell (one transaction), then tap it again.", kb([url("🔑 Sessions page", sessions), back]));
-    if (await this.#d.session.permit2Fixed?.(token, link.account).catch(() => false)) return this.#say(chatId, permit2FixedSale(info.symbol), kb([url("🔑 Withdraw token to my wallet", `${sessions}#wtoken-form`), back]));
-    const quote = await this.#d.reads.quoteSell(token, held);
-    if (quote === null) return this.#say(chatId, "no ETH pool on the venue for this token.", kb([btn("← Back", "home")]));
-    const deadline = BigInt(Math.floor(this.#now.getTime() / 1000) + 3600);
-    const can = await this.#d.session.canSell(link.account, this.#d.reads.router, info.poolKey ?? venuePoolKey(token), held, minOutFor(quote, SHIELD_SLIPPAGE_BPS), deadline);
-    if (!can.ok) return this.#say(chatId, `your session says no to selling this position: <b>${esc(can.why)}</b>. manage it on the Sessions page, then tap it again.`, kb([url("🔑 Sessions page", sessions), back]));
-    const order: Order = { id: newOrderId(), tgId, account: link.account, chainId: this.#d.session.chainId, token, kind: "shield", ethWei: 0n, sellPct: 100, createdAt: this.#now.toISOString(), status: "open", refusals: 0 };
-    await orders.put(order);
+    const built = await buildShield(this.#build(orders), { tgId, account: link.account, token });
+    if (!built.ok) return this.#say(chatId, built.reason, built.buttons);
+    await orders.put(built.order);
     await this.#say(chatId, [
-      `${this.#orderLine(order, info.symbol, info.decimals)}`,
+      built.line,
       "on. if liquidity is pulled from its pool or its dev sells, the bot sells all of it from your account at the next check (within five minutes), before the alarm goes to anyone, guarded at 10% under the quote so the exit lands. it fires once, then closes. off from 📋 Orders.",
     ].join("\n"), kb([btn("📋 Orders", "orders"), btn("↻ Card", `token:${token}`)]));
   }
 
-  #orderLine(o: Order, symbol: string, decimals: number): string {
-    if (o.kind === "shield") return `🛡 rug shield: sell all your <b>${esc(symbol)}</b> if its liquidity is pulled or its dev sells`;
-    if (o.kind === "tp") return `🎯 take profit: sell <code>${o.sellPct ?? 100}%</code> of your <b>${esc(symbol)}</b> once one ETH buys <code>${fmt(o.triggerPerEth ?? 0n, decimals, 2)} ${esc(symbol)}</code> or fewer`;
-    if (o.kind === "sl") return `🛑 stop loss: sell <code>${o.sellPct ?? 100}%</code> of your <b>${esc(symbol)}</b> once one ETH buys <code>${fmt(o.triggerPerEth ?? 0n, decimals, 2)} ${esc(symbol)}</code> or more`;
-    if (o.kind === "limit") return `⏱ limit buy <code>${eth(o.ethWei)} ETH</code> of <b>${esc(symbol)}</b> at <code>${fmt(o.triggerPerEth ?? 0n, decimals, 2)} ${esc(symbol)}</code> per ETH or better`;
-    const every = (o.everyMs ?? 0) / 3_600_000;
-    return `🔁 dca <code>${eth(o.ethWei)} ETH</code> of <b>${esc(symbol)}</b> every ${every} hour${every === 1 ? "" : "s"}, ${o.remaining ?? 0} left, next ${(o.nextAt ?? "").slice(0, 16).replace("T", " ")} UTC`;
+  #build(orders: OrderStore): OrderBuildDeps {
+    return { reads: this.#d.reads, session: this.#d.session, orders, siteUrl: this.#d.siteUrl, sellSlippageBps: this.#cfg("sellSlippageBps"), now: () => this.#now };
   }
+
+  #orderLine(o: Order, symbol: string, decimals: number): string { return orderLine(o, symbol, decimals); }
 
   /** The open orders, one line each, a cancel button under each; the reason of the last refusal on the line when there was one. */
   async #orders(chatId: string, tgId: string, messageId?: number): Promise<void> {
@@ -947,21 +895,6 @@ export class SessionBot {
 }
 
 /** A decimal string to a token's base units; null when it is not a plain number. */
-const toUnits = (s: string, decimals: number): bigint | null => {
-  if (!/^\d+(\.\d+)?$/.test(s)) return null;
-  const [w = "0", f = ""] = s.split(".");
-  return BigInt(w) * 10n ** BigInt(decimals) + BigInt((f + "0".repeat(decimals)).slice(0, decimals) || "0");
-};
-
-/**
- * A token that fixes Permit2's allowance at infinity (Solady-style) refuses the exact approval `sell` makes and its reset
- * to zero, so the session account can never sell it (2026-10-07, CHOP). The card says so before a buy, the Sell tap says
- * so instead of sending a sale that reverts, and both name the way out: withdrawToken from the Sessions page.
- */
-export const permit2FixedCard = (symbol: string, sessionsUrl: string): string =>
-  `⚠️ <b>the bot can buy ${esc(symbol)} but can't sell it from your session.</b> this is a Clanker-style launch: the token fixes its Permit2 approval at infinity, which the session's sell can't work with. if you buy, the only way out is <a href="${sessionsUrl}#wtoken-form">Withdraw token to my wallet</a> on the Sessions page, then selling from your wallet. only you can do that; the bot cannot move tokens to your wallet.`;
-
-export const permit2FixedSale = (symbol: string): string =>
-  `${esc(symbol)} can't be sold through the session: it is a Clanker-style launch that fixes its Permit2 approval at infinity, and the account's sell sets an exact one, so the token refuses it every time. nothing was sent and no gas was spent.\n\nyour ${esc(symbol)} is still in your account and only you can move it: tap the button below, use Withdraw token to my wallet, then sell it from your wallet.`;
+export { permit2FixedCard, permit2FixedSale } from "./bot-order-build.js";
 
 export type { Hex };

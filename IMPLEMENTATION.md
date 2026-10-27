@@ -3633,3 +3633,37 @@ admin at all, and a moved cold key would have passed in silence. It reads both
 now, the top-level one winning. The tests pin the matrix entries, the sites,
 the bearers and the admin's second home; the dry runs against both chains
 report nothing, as they should today.
+
+## 2026-10-22, agents US2: a share left unsaid after the direction question
+
+The spec's demo path ("pepe at 50%", tap take profit, get the card) and FR-008
+(one question per sentence) leave no room to ask for the share once the
+direction is answered, and FR-007 says the bot never guesses the size. The
+conservative reading kept here: the card shows the take profit or stop loss
+at 100% of the position, with the line "no share was given, so all of it.
+Cancel and say a share to sell less." under it. Nothing is placed without
+Confirm, and the share is on the card in plain words. This applies only after
+the direction question. A sentence that names a direction but no share gets
+the size question (25%, 50%, 100%). If the founder would rather the demo
+sentence ask for the share and skip the direction default, the change is in
+`apply` in `src/fleet/bot-sentence-questions.ts`.
+
+## 2026-10-22, agents (PR #168): deviations taken
+
+- **The translator speaks Anthropic's Messages format, not an OpenAI-shaped client.** The direction doc asked for an OpenAI shape so 0G would be a config change. 0G's Claude entries are served in the Messages format, so a switch to them is likely a base URL and a key. A switch to an open model on 0G needs a second `Translator`, about 60 lines.
+- **Paused sessions wait in the order runner.** The founder's call. FR-016's "will wait until you resume" was false, because three refusals in a row failed an order. `OrderRunner` now reads the session when it says no: paused is a wait, told once, and never counted. This changes every standing order, tapped ones too.
+- **Default prices are Haiku 4.5's list price ($1 in, $5 out per million tokens).** Unverified for `claude-haiku-5-5`. `BOT_SENTENCE_PRICE_IN` and `_OUT` set the real ones.
+- **A failed translation gives its count back** (`SentenceStore.unbump`). data-model.md counts before the call, and research R12 says a failure costs no count. Both hold this way.
+- **The SC-001 replay reads the sentences from a local file** (`SENTENCE_EVAL_TEXTS`), because the eval set holds hashes only. Without that file it replays `test/fleet/eval/fixture.json`.
+- **The pre-commit hook's pattern was narrowed** to `noreply@anthropic\.com` (the founder's call). It had stripped the translator's request line from 6f174bb, and fd077ab restored it.
+- **The question helpers live in `bot-sentence-questions.ts`**, beside `bot-sentences.ts` rather than in it, to keep each file one job.
+
+## 2026-10-27, agents (PR #168): self-review after Lucian left
+
+Lucian is no longer on the team, so the second review of #168 was run with the `code-review` skill (high). It made ten findings. Seven were bugs and are fixed, each with its own test. Three are left as they are:
+
+- **Every sentence reads the price and balance of every token the account has traded.** That is two RPC reads per token on each message, each tap and each Confirm. It's fine at today's account sizes. The fix, if it shows in the logs, is to resolve the named token first and read only its candidates.
+- **There is dead store surface.** `expireOlderThan` and `expireChat` are called only by tests. `pastedAddress` and the per-token `now` prices are built but never reach the model. Removing them is a cleanup for its own PR.
+- **`scripts/sentence-eval-add.mjs` repeats `hashSentence`'s normalisation.** A test that the two agree would catch drift. Until then, change both together.
+
+One fix changes behaviour on purpose: a positive percent on a limit buy (above the price) is now refused, as the prompt defines the sign. Before, it was flipped into a dip.

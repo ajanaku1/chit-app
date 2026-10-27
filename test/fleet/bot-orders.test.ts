@@ -18,7 +18,7 @@ import { MemoryPositionLedger } from "../../src/fleet/bot-positions.js";
 import { type Address, type Hex, parseEther } from "viem";
 import type { BotChain } from "../../src/fleet/bot-chain.js";
 import { MemoryBotLinkStore } from "../../src/fleet/bot-link.js";
-import { FIRING_LEASE_MS, MemoryOrderStore, NeonOrderStore, OrderRunner, due, fair, levelOut, type Order, type OrderSql, type OrderStore } from "../../src/fleet/bot-orders.js";
+import { FIRING_LEASE_MS, MemoryOrderStore, NeonOrderStore, OrderRunner, PAUSED_WAIT, due, fair, levelOut, type Order, type OrderSql, type OrderStore } from "../../src/fleet/bot-orders.js";
 import type { SessionChain } from "../../src/fleet/bot-session-chain.js";
 import { RecordingTelegram } from "../../src/fleet/bot-telegram.js";
 import { UNIVERSAL_ROUTER_EXECUTE_SELECTOR, encodeV4EthBuy, minOutFor } from "../../src/fleet/v4-swap.js";
@@ -167,6 +167,31 @@ test("a refusal keeps the order open with the reason and tells the owner; three 
   assert.equal(d.refusals, 3);
   assert.match(telegram.last(), /3 refusals in a row, so the order is off/);
   assert.equal(session.calls.length, 1, "no execute on any refusal");
+});
+
+test("a paused session is a wait, told once, never a refusal: the order outlives any pause and fires once resumed; a dca's slot moves on without burning a buy", async () => {
+  const { orders, links, session, telegram, runner } = setup();
+  await linked(links);
+  const view = { exists: true, paused: true, revoked: false, expiry: Math.floor(clock.getTime() / 1000) + 86_400, maxValuePerCall: parseEther("0.05").toString(), totalValueCap: parseEther("0.5").toString(), spentValue: "0", calls: 0 };
+  session.s.sessionOf = async () => view;
+  session.refuseWith("paused");
+  await orders.put(order({ id: "l", kind: "limit", triggerPerEth: 1_200_000n }));
+  await orders.put(order({ id: "d", kind: "dca", everyMs: HOUR, remaining: 5, nextAt: clock.toISOString() }));
+  const sent = telegram.sent.length;
+  for (let i = 0; i < 6; i++) assert.equal((await runner.run(new Date(clock.getTime() + i * HOUR))).refused, 0);
+  const [l, d] = [(await orders.get("l"))!, (await orders.get("d"))!];
+  assert.deepEqual([l.status, l.refusals, l.lastError], ["open", 0, PAUSED_WAIT], "six checks paused and still on");
+  assert.deepEqual([d.status, d.refusals, d.remaining], ["open", 0, 5]);
+  assert.equal(telegram.sent.slice(sent).filter((o) => o.kind === "send" && o.text.includes(PAUSED_WAIT)).length, 2, "each order told once, not every check");
+  view.paused = false; session.refuseWith(null);
+  await runner.run(new Date(clock.getTime() + 6 * HOUR));
+  assert.equal((await orders.get("l"))!.status, "done", "resumed, it fires");
+  assert.equal(session.calls.length, 2);
+  // Not paused: the session's no is still a refusal, and three of them still fail the order.
+  session.refuseWith("over your per-trade cap");
+  await orders.put(order({ id: "l2", kind: "limit", triggerPerEth: 1_200_000n }));
+  for (let i = 0; i < 3; i++) await runner.run(new Date(clock.getTime() + (7 + i) * HOUR));
+  assert.equal((await orders.get("l2"))!.status, "failed");
 });
 
 test("an order placed from an account the telegram no longer links to, or linked on another chain, is refused, not fired", async () => {

@@ -148,6 +148,21 @@
  *                                only, so on testnet nothing is asked or shown
  *   BOT_HEY_OFF                  1 hides the HEY line and stops the asks
  *   HEY_API_BASE                 default https://heyresearch.xyz
+ *   ANTHROPIC_API_KEY            the sentence desk (specs/006-agent-sentences):
+ *                                plain text in the DM becomes a Proposed card.
+ *                                Without it the desk is not built and free
+ *                                text keeps today's hint. Added by the founder
+ *   BOT_SENTENCES_OFF            1 disables the desk without removing the key
+ *   BOT_SENTENCE_MODEL           model id; default claude-haiku-5-5. Models that
+ *                                reject a forced tool call refuse at startup
+ *   BOT_SENTENCE_DAILY           sentences per trader per UTC day, one limit
+ *                                for everyone; default 20
+ *   BOT_SENTENCE_SPEND_ALERT_USD the day's spend that sends one alert to
+ *                                MONITOR_CHAT_ID; default 20
+ *   BOT_SENTENCE_PRICE_IN,       USD per million input and output tokens for
+ *   BOT_SENTENCE_PRICE_OUT       the spend accounting; default Haiku's list
+ *                                price. BOT_KEY_SECRET also keys the sentence
+ *                                HMAC; no sentence text is stored or logged
  *   FLEET_CHAIN_ID, FLEET_RPC_URL, FLEET_POOL_ADDRESS, FLEET_TOKEN_ALLOWLIST
  *                                as for the service; the first allowlisted
  *                                token is the one the bot trades
@@ -175,6 +190,9 @@ import { createTelegram } from "./bot-telegram.js";
 import { MemoryBotWalletStore, NeonBotWalletStore, secretIsStrong, type BotWalletStore } from "./bot-wallets.js";
 import { MemoryBotLinkStore, NeonBotLinkStore, type BotLinkStore } from "./bot-link.js";
 import { MemoryOrderStore, NeonOrderStore, type OrderStore } from "./bot-orders.js";
+import { MemorySentenceStore, NeonSentenceStore } from "./bot-sentence-store.js";
+import { createAnthropicTranslator, rejectsForcedTool } from "./bot-sentence-translate.js";
+import type { SentenceLimits } from "./bot-sentences.js";
 import { createSessionChain } from "./bot-session-chain.js";
 import { SessionBot, type SessionBotDeps } from "./bot-session.js";
 import type { CopyStore } from "./bot-copy.js";
@@ -320,6 +338,43 @@ const boardFromSite = (site: string) => async (): Promise<BoardLike> => {
   return (await r.json()) as BoardLike;
 };
 
+/** BOT_SENTENCE_DAILY, BOT_SENTENCE_SPEND_ALERT_USD, BOT_SENTENCE_PRICE_IN and _OUT, each a positive number when set; MONITOR_CHAT_ID gets the alert. */
+const sentenceLimitsFromEnv = (): Partial<SentenceLimits> => {
+  const read = (name: string, whole: boolean): number | undefined => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return undefined;
+    const n = Number(raw);
+    if (!(n > 0) || (whole && !Number.isInteger(n))) refuse(`${name} must be a ${whole ? "whole " : ""}number above zero`);
+    return n;
+  };
+  const daily = read("BOT_SENTENCE_DAILY", true), alertUsd = read("BOT_SENTENCE_SPEND_ALERT_USD", false);
+  const priceIn = read("BOT_SENTENCE_PRICE_IN", false), priceOut = read("BOT_SENTENCE_PRICE_OUT", false);
+  const operatorChatId = process.env.MONITOR_CHAT_ID?.trim();
+  return { ...(daily ? { daily } : {}), ...(alertUsd ? { alertUsd } : {}), ...(priceIn ? { priceIn } : {}), ...(priceOut ? { priceOut } : {}), ...(operatorChatId ? { operatorChatId } : {}) };
+};
+
+/**
+ * The sentence desk's model and tables (specs/006 contracts/env.md): built only with ANTHROPIC_API_KEY set and
+ * BOT_SENTENCES_OFF not 1, and only with BOT_KEY_SECRET to key the hash; otherwise free text keeps the hint.
+ */
+const sentencesFromEnv = (): SessionBotDeps["sentences"] => {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey || process.env.BOT_SENTENCES_OFF === "1") return undefined;
+  const secret = process.env.BOT_KEY_SECRET;
+  if (!secret) { warnOnce("sentences", "ANTHROPIC_API_KEY is set but BOT_KEY_SECRET is not: the sentence desk needs it to hash sentences, so it is off"); return undefined; }
+  const limits = sentenceLimitsFromEnv();
+  const model = process.env.BOT_SENTENCE_MODEL?.trim() || "claude-haiku-5-5";
+  if (rejectsForcedTool(model)) refuse(`BOT_SENTENCE_MODEL ${model} rejects the forced propose_orders call; use claude-haiku-5-5`);
+  const translator = createAnthropicTranslator({ apiKey, model, fetch: (input, init) => fetch(input, init) });
+  const url = process.env.DATABASE_URL;
+  if (url) {
+    const sql = neon(url);
+    return { translator, secret, limits, store: new NeonSentenceStore({ query: (query, params) => sql.query(query, params) as Promise<readonly Record<string, unknown>[]> }) };
+  }
+  if (process.env.BOT_MEMORY_STORE !== "1") refuse("DATABASE_URL is not set (BOT_MEMORY_STORE=1 allows a per-instance memory store on one machine only)");
+  return { translator, secret, limits, store: new MemorySentenceStore() };
+};
+
 /** Session mode's standing orders (limit buys, DCA); the same store rule as the links. BOT_ORDERS_OFF=1 offers none. */
 const ordersFromEnv = (): OrderStore | undefined => {
   if (process.env.BOT_ORDERS_OFF === "1") return undefined;
@@ -374,6 +429,7 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
   if (launchpad && !isAddress(launchpad)) refuse("BOT_LAUNCHPAD_FACTORY must be the launchpad factory's address");
   const launchClient = launchpad ? createPublicClient({ transport: http(rpcUrl) }) : undefined;
   const launch = launchpad && launchClient ? createLaunchCheck({ factory: launchpad as Address, readContract: (args) => launchClient.readContract(args as never) }) : undefined;
+  const sentences = sentencesFromEnv();
   const deps: SessionBotDeps = {
     reads,
     session: overrides.session ?? createSessionChain({ chainId, rpcUrl, signerKey: signerKey as `0x${string}` }),
@@ -395,6 +451,7 @@ const buildSession = (overrides: SessionOverrides): SessionBot => {
     ...(alerts ? { alerts } : {}),
     ...(dailyExecutes !== undefined ? { dailyExecutes } : {}),
     ...(dailyGasWei !== undefined ? { dailyGasWei } : {}),
+    ...(sentences ? { sentences } : {}),
     positions: positionLedgerFromEnv(),
     comp: compFromEnv(),
     bugs: { store: bugsFromEnv(), ...(process.env.MONITOR_CHAT_ID?.trim() ? { operatorChatId: process.env.MONITOR_CHAT_ID.trim() } : {}) },
